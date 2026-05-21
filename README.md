@@ -1,6 +1,6 @@
 # perception_pipeline
 
-ROS 2 Python package for 6-DoF object pose estimation using the T-LESS BOP dataset. Built for benchmarking perception pipelines for robotic manipulation.
+ROS 2 package for 6-DoF object pose estimation using the T-LESS BOP dataset, targeting robotic manipulation perception.
 
 ## Requirements
 
@@ -39,36 +39,31 @@ pip3 install \
   --break-system-packages
 ```
 
-> **Compatibility:** `numpy<2` required for ROS 2 Humble's `cv_bridge`; `opencv-python<4.9` required because newer versions depend on NumPy 2.
+> `numpy<2` and `opencv-python<4.9` required for ROS 2 Humble cv_bridge compatibility.
 
 ### 4. Build
 
 ```bash
-cd ~/ros2_ws
-colcon build --packages-select perception_pipeline
+cd ~/ros2_ws && colcon build --packages-select perception_pipeline
 source install/setup.bash
 ```
 
 ## Dataset Setup
 
-```bash
-# Download and extract T-LESS into data/tless/
-python3 scripts/download_bop.py
+Downloads ~860 MB of [T-LESS](https://bop.felk.cvut.cz/datasets/) from HuggingFace (CC BY 4.0).
 
-# Convert scene to ROS 2 bag at data/bags/tless_scene1
-python3 scripts/bop_to_rosbag.py
+```bash
+python3 scripts/download_bop.py   # download + extract T-LESS
+python3 scripts/bop_to_rosbag.py  # convert to ROS 2 bag
 ```
 
 ## Running
-
-### Launch (bag + detector)
 
 ```bash
 ros2 launch perception_pipeline detect.launch.py
 ```
 
 Override defaults:
-
 ```bash
 ros2 launch perception_pipeline detect.launch.py \
   bag_path:=/path/to/bag \
@@ -76,29 +71,17 @@ ros2 launch perception_pipeline detect.launch.py \
   confidence_threshold:=0.5
 ```
 
-### Manual
-
-```bash
-ros2 bag play ~/ros2_ws/src/perception_pipeline/data/bags/tless_scene1 --loop
-ros2 run perception_pipeline detector_node --ros-args -p model_path:=models/yolo11n.pt
-rviz2 -d config/tless_viz.rviz
-```
-
-### Topics
+## Topics
 
 | Topic | Type | Description |
 |---|---|---|
 | `/camera/rgb/image_raw` | `sensor_msgs/Image` | RGB frames |
 | `/camera/depth/image_raw` | `sensor_msgs/Image` | Depth frames |
 | `/camera/camera_info` | `sensor_msgs/CameraInfo` | Camera intrinsics |
-| `/gt_pose/obj_000002` | `geometry_msgs/PoseStamped` | Ground truth pose (obj 2) |
-| `/gt_pose/obj_000025` | `geometry_msgs/PoseStamped` | Ground truth pose (obj 25) |
-| `/gt_pose/obj_000029` | `geometry_msgs/PoseStamped` | Ground truth pose (obj 29) |
-| `/gt_pose/obj_000030` | `geometry_msgs/PoseStamped` | Ground truth pose (obj 30) |
-| `/detections` | `vision_msgs/Detection2DArray` | YOLOv8 detections |
+| `/detections` | `vision_msgs/Detection2DArray` | YOLO detections |
 | `/detections/debug_image` | `sensor_msgs/Image` | Annotated debug image |
+| `/gt_pose/obj_XXXXXX` | `geometry_msgs/PoseStamped` | Ground truth poses |
 
-> Scene 1 contains objects 2, 25, and 30.
 
 ## Project Structure
 
@@ -120,9 +103,3 @@ perception_pipeline/
     ├── download_bop.py
     └── bop_to_rosbag.py
 ```
-
-## Dataset
-
-[T-LESS](https://bop.felk.cvut.cz/datasets/) from the BOP Benchmark.
-Hodaň et al.: *T-LESS: An RGB-D Dataset for 6D Pose Estimation of Texture-less Objects*, WACV 2017. License: CC BY 4.0.
-Not included — run `scripts/download_bop.py` to fetch from HuggingFace.
