@@ -35,6 +35,23 @@ def generate_launch_description():
         output='screen'
     )
 
+    mesh_dir_arg = DeclareLaunchArgument(
+        'mesh_dir',
+        default_value=os.path.join(
+            os.path.expanduser('~'), 'ros2_ws', 'src',
+            'perception_pipeline', 'data', 'tless', 'models_cad'
+        ),
+        description='Path to T-LESS CAD models directory'
+    )
+
+    foundationpose_path_arg = DeclareLaunchArgument(
+        'foundationpose_path',
+        default_value=os.path.join(
+            os.path.expanduser('~'), 'ros2_ws', 'src', 'FoundationPose'
+        ),
+        description='Path to FoundationPose repository'
+    )
+
     detector_node = Node(
         package='perception_pipeline',
         executable='detector_node',
@@ -46,10 +63,24 @@ def generate_launch_description():
         output='screen'
     )
 
+    pose_estimation_node = Node(
+        package='perception_pipeline',
+        executable='pose_estimation_node',
+        name='pose_estimation',
+        parameters=[{
+            'mesh_dir': LaunchConfiguration('mesh_dir'),
+            'foundationpose_path': LaunchConfiguration('foundationpose_path'),
+        }],
+        output='screen'
+    )
+
     return LaunchDescription([
         bag_path_arg,
         model_path_arg,
         confidence_arg,
+        mesh_dir_arg,
+        foundationpose_path_arg,
         play_bag,
         detector_node,
+        pose_estimation_node,
     ])
