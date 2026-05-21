@@ -1,12 +1,13 @@
 # CLAUDE.md
 
 ## Project Overview
-ROS 2 C++ package for 6-DoF object pose estimation using the T-LESS BOP dataset.
-Target use case: robotic manipulation perception pipeline.
+ROS 2 mixed C++/Python package for 6-DoF object pose estimation using the T-LESS BOP dataset.
+Target use case: robotic manipulation perception pipeline for industrial objects.
 
 ## Build System
-- ROS 2 Humble + ament_cmake
+- ROS 2 Humble + ament_cmake_python (mixed C++ and Python)
 - C++ nodes in src/, headers in include/perception_pipeline/
+- Python ROS nodes in perception_pipeline/
 - Python utility scripts in scripts/ (not ROS nodes)
 
 ```bash
@@ -18,7 +19,11 @@ source install/setup.bash
 ## Key Commands
 ```bash
 # play dataset bag
-ros2 bag play data/bags/tless_scene1 --loop
+ros2 bag play ~/ros2_ws/src/perception_pipeline/data/bags/tless_scene1 --loop
+
+# run detector
+ros2 run perception_pipeline detector_node \
+  --ros-args -p model_path:=/home/adrian/ros2_ws/src/perception_pipeline/models/yolo11n.pt
 
 # visualize
 rviz2 -d config/tless_viz.rviz
@@ -32,16 +37,30 @@ python3 scripts/bop_to_rosbag.py
 
 ## Important Notes
 - numpy must be <2 due to cv_bridge compatibility: `pip3 install "numpy<2" --break-system-packages`
-- data/ is gitignored — dataset must be downloaded locally
+- data/ and models/ are gitignored — must be generated locally
 - T-LESS scene 1 contains objects 2, 25, 29, 30
 - Time in ROS 2 bags is in nanoseconds (not seconds like ROS 1)
 - Depth values in T-LESS are in mm, multiply by depth_scale then divide by 1000 for meters
+- Python inference uses ultralytics directly (not OpenCV DNN — too old at 4.5.4)
+- YOLO model accepts .pt files directly, no ONNX export needed until TensorRT optimization
 
 ## Package Structure
-- src/          C++ source files (perception nodes go here)
-- include/      C++ headers
-- scripts/      Python utilities (download, bag conversion)
-- data/tless/   T-LESS dataset (gitignored)
-- data/bags/    ROS 2 bag files (gitignored)
-- config/       RViz configs, parameter files
-- launch/       ROS 2 launch files
+- src/                    C++ source files
+- include/                C++ headers
+- perception_pipeline/    Python ROS nodes
+- scripts/                Python utilities (download, bag conversion)
+- models/                 YOLO model weights (gitignored)
+- data/tless/             T-LESS dataset (gitignored)
+- data/bags/              ROS 2 bag files (gitignored)
+- config/                 RViz configs, parameter files
+- launch/                 ROS 2 launch files
+
+## Current Status
+- [x] ROS 2 package structure
+- [x] T-LESS BOP dataset downloaded and converted to ROS 2 bag
+- [x] RViz visualization config
+- [x] YOLOv8/YOLO11 Python detection node
+- [ ] Pose estimation node (FoundationPose)
+- [ ] Evaluation against ground truth
+- [ ] TensorRT optimization
+- [ ] Launch file wiring full pipeline

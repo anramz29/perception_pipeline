@@ -1,49 +1,21 @@
 cmake_minimum_required(VERSION 3.8)
 project(perception_pipeline)
 
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
-endif()
-
-# find dependencies
 find_package(ament_cmake REQUIRED)
-find_package(rclcpp REQUIRED)
-find_package(sensor_msgs REQUIRED)
-find_package(geometry_msgs REQUIRED)
-find_package(vision_msgs REQUIRED)
-find_package(cv_bridge REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS core imgproc dnn)
+find_package(ament_cmake_python REQUIRED)
 
-# YOLOv8 detector node
-add_executable(yolov8_detector_node
-  src/yolov8_detector_node.cpp
-)
+# ── Python (CV / model inference) ────────────────────────────────────────────
+ament_python_install_package(${PROJECT_NAME})
 
-target_include_directories(yolov8_detector_node PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
-  ${OpenCV_INCLUDE_DIRS}
-)
-
-ament_target_dependencies(yolov8_detector_node
-  rclcpp
-  sensor_msgs
-  geometry_msgs
-  vision_msgs
-  cv_bridge
-)
-
-target_link_libraries(yolov8_detector_node
-  ${OpenCV_LIBS}
-)
-
-install(TARGETS yolov8_detector_node
+install(PROGRAMS perception_pipeline/detector_node.py
   DESTINATION lib/${PROJECT_NAME}
+  RENAME detector_node
 )
 
-install(DIRECTORY include/
-  DESTINATION include
-)
+# ── Shared resources ─────────────────────────────────────────────────────────
+install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
+install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
+install(DIRECTORY models/ DESTINATION share/${PROJECT_NAME}/models)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

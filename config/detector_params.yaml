@@ -1,0 +1,4 @@
+yolov8_detector:
+  ros__parameters:
+    model_path: ""           # required: absolute path to .pt model file
+    confidence_threshold: 0.25
