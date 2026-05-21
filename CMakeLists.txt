@@ -12,6 +12,11 @@ install(PROGRAMS perception_pipeline/detector_node.py
   RENAME detector_node
 )
 
+install(PROGRAMS perception_pipeline/pose_estimation_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME pose_estimation_node
+)
+
 # ── Shared resources ─────────────────────────────────────────────────────────
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)

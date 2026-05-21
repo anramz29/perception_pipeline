@@ -1,0 +1,4 @@
+pose_estimation:
+  ros__parameters:
+    mesh_dir: "/home/adrian/ros2_ws/src/perception_pipeline/data/tless/models_cad"
+    foundationpose_path: "/home/adrian/ros2_ws/src/FoundationPose"

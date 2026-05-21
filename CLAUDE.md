@@ -25,6 +25,10 @@ ros2 bag play ~/ros2_ws/src/perception_pipeline/data/bags/tless_scene1 --loop
 ros2 run perception_pipeline detector_node \
   --ros-args -p model_path:=/home/adrian/ros2_ws/src/perception_pipeline/models/yolo11n.pt
 
+# run pose estimator
+ros2 run perception_pipeline pose_estimation_node \
+  --ros-args --params-file config/pose_estimation_params.yaml
+
 # visualize
 rviz2 -d config/tless_viz.rviz
 
@@ -60,7 +64,34 @@ python3 scripts/bop_to_rosbag.py
 - [x] T-LESS BOP dataset downloaded and converted to ROS 2 bag
 - [x] RViz visualization config
 - [x] YOLOv8/YOLO11 Python detection node
-- [ ] Pose estimation node (FoundationPose)
+- [x] Pose estimation node (FoundationPose)
 - [ ] Evaluation against ground truth
 - [ ] TensorRT optimization
 - [ ] Launch file wiring full pipeline
+## Next Task: Pose Estimation Node
+
+Create `perception_pipeline/pose_estimation_node.py`:
+
+### Subscribes to
+- `/camera/rgb/image_raw` (sensor_msgs/Image)
+- `/camera/depth/image_raw` (sensor_msgs/Image)
+- `/camera/camera_info` (sensor_msgs/CameraInfo)
+- `/detections` (vision_msgs/Detection2DArray)
+
+### For each detection
+- Crop RGB and depth using the bounding box
+- Load the T-LESS object mesh from `data/tless/models/obj_XXXXXX.ply`
+- Run FoundationPose inference in CPU mode
+- Publish estimated pose to `/pose_estimation/obj_XXXXXX` (geometry_msgs/PoseStamped)
+
+### Parameters
+- `mesh_dir`: path to T-LESS models folder (default: `data/tless/models`)
+- `foundationpose_path`: path to FoundationPose repo (default: `~/ros2_ws/src/FoundationPose`)
+
+### Important
+- FoundationPose is cloned at `~/ros2_ws/src/FoundationPose`
+- Add FoundationPose to `sys.path` at startup
+- CPU mode only — no CUDA
+- T-LESS meshes are PLY files: `obj_000001.ply`, `obj_000002.ply` etc.
+- Object ID comes from the detection `class_id` field
+- Use `trimesh` to load PLY meshes
