@@ -8,28 +8,39 @@ from cv_bridge import CvBridge
 from ultralytics import YOLO
 
 
-class YOLOv8DetectorNode(Node):
+# YOLOv11 Object Detection Node
+class YOLOv11DetectorNode(Node):
     def __init__(self):
-        super().__init__('yolov8_detector')
+        super().__init__('yolov11_detector')
 
+        # Path to the YOLOv11 model weights (e.g., 'yolov11n.pt' or a custom path)
         self.declare_parameter('model_path', '')
+
+        # Confidence threshold for detections (0.0 to 1.0)
         self.declare_parameter('confidence_threshold', 0.25)
 
-        model_path = self.get_parameter('model_path').get_parameter_value().string_value
+
+        # Get parameters
+        model_path = self.get_parameter('model_path').get_parameter_value().string_value 
         self.conf_threshold = self.get_parameter('confidence_threshold').get_parameter_value().double_value
 
+        # need to always validate
         if not model_path:
             raise RuntimeError("Parameter 'model_path' must be set to a valid model path.")
 
+        # Loead Yolov11 
         self.model = YOLO(model_path)
         self.bridge = CvBridge()
 
+        # Publishers for detections and debug images, message buffer size of 10
         self.det_pub = self.create_publisher(Detection2DArray, '/detections', 10)
         self.debug_pub = self.create_publisher(Image, '/detections/debug_image', 10)
 
+        # Subscribe to the raw RGB image topic
         self.create_subscription(Image, '/camera/rgb/image_raw', self._image_cb, 10)
 
-        self.get_logger().info(f'YOLOv8Detector node started, model: {model_path}')
+        # Log startup info, including the model path
+        self.get_logger().info(f'YOLOv11Detector node started, model: {model_path}')
 
     def _image_cb(self, msg: Image) -> None:
         try:
@@ -89,7 +100,7 @@ class YOLOv8DetectorNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = YOLOv8DetectorNode()
+    node = YOLOv11DetectorNode()
     rclpy.spin(node)
     rclpy.shutdown()
 

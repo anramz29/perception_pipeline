@@ -1,28 +1,39 @@
-import rclpy
-from rclpy.serialization import serialize_message
-import rosbag2_py
-from sensor_msgs.msg import Image, CameraInfo
-from geometry_msgs.msg import PoseStamped
-from cv_bridge import CvBridge
-from scipy.spatial.transform import Rotation
-import cv2, json, numpy as np, os
+import rclpy # ros depedencies 
+from rclpy.serialization import serialize_message #ros messages conversion
+import rosbag2_py # for writing ROS 2 bags
+from sensor_msgs.msg import Image, CameraInfo # image camera info
+from geometry_msgs.msg import PoseStamped # for ground truth poses
+from cv_bridge import CvBridge # for converting OpenCV images to ROS messages
+from scipy.spatial.transform import Rotation # for converting rotation matrices to quaternions
+import cv2, json, numpy as np, os # for file handling and data processing
 
-bridge = CvBridge()
+# improting cv bridge
+bridge = CvBridge() 
 
+# Define paths
 base = os.path.expanduser('~/ros2_ws/src/perception_pipeline/data')
 scene_path = f"{base}/tless/test_primesense/000001"
 output_path = f"{base}/bags/tless_scene1"
 
+# Load camera parameters and ground truth poses
 with open(f"{scene_path}/scene_camera.json") as f:
     cameras = json.load(f)
 
+# Load ground truth poses (if available)
 with open(f"{scene_path}/scene_gt.json") as f:
     ground_truth = json.load(f)
 
 # setup writer
 writer = rosbag2_py.SequentialWriter()
+
+# configure storage options (using SQLite3 backend)
 storage_options = rosbag2_py.StorageOptions(uri=output_path, storage_id='sqlite3')
+
+
+# configure converter options (using default, no compression)
 converter_options = rosbag2_py.ConverterOptions('', '')
+
+# open the bag for writing
 writer.open(storage_options, converter_options)
 
 # register topics
@@ -40,6 +51,7 @@ for obj_id in range(1, 31):
         type='geometry_msgs/msg/PoseStamped',
         serialization_format='cdr'))
 
+# Process each image and write to the bag
 for img_id_str, cam_data in cameras.items():
     img_id = int(img_id_str)
     t_ns = int(img_id * 0.033 * 1e9)  # nanoseconds
@@ -73,7 +85,7 @@ for img_id_str, cam_data in cameras.items():
         pose = PoseStamped()
         pose.header.stamp = rgb_msg.header.stamp
         pose.header.frame_id = "camera_link"
-        pose.pose.position.x = float(t_vec[0])
+        pose.pose.position.x = float(t_vec[0]) # converting to float for ROS message compatibility
         pose.pose.position.y = float(t_vec[1])
         pose.pose.position.z = float(t_vec[2])
 

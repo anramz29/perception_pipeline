@@ -99,7 +99,11 @@ class PoseEstimationNode(Node):
             self.get_logger().error(f'Depth conversion error: {e}')
 
     def _info_cb(self, msg: CameraInfo) -> None:
-        K = np.array(msg.k, dtype=np.float64).reshape(3, 3)
+        try:
+            K = np.array(msg.k, dtype=np.float64).reshape(3, 3)
+        except ValueError as e:
+            self.get_logger().error(f'CameraInfo k field invalid: {e}')
+            return
         with self._lock:
             self._latest_K = K
 
@@ -117,6 +121,12 @@ class PoseEstimationNode(Node):
         if rgb is None or depth is None or K is None:
             return
 
+        if rgb.shape[:2] != depth.shape[:2]:
+            self.get_logger().error(
+                f'RGB/depth shape mismatch: rgb={rgb.shape[:2]} depth={depth.shape[:2]} — skipping frame'
+            )
+            return
+
         for det in msg.detections:
             if not det.results:
                 continue
@@ -130,6 +140,13 @@ class PoseEstimationNode(Node):
             y1 = max(0, int(cy - h / 2))
             x2 = min(rgb.shape[1], int(cx + w / 2))
             y2 = min(rgb.shape[0], int(cy + h / 2))
+
+            if x1 >= x2 or y1 >= y2:
+                self.get_logger().warning(
+                    f'Degenerate bbox for obj {obj_id} after clipping: '
+                    f'({x1},{y1})-({x2},{y2}) — skipping'
+                )
+                continue
 
             ob_mask = np.zeros(rgb.shape[:2], dtype=bool)
             ob_mask[y1:y2, x1:x2] = True
@@ -147,16 +164,20 @@ class PoseEstimationNode(Node):
                 else:
                     est = self._estimators[obj_id]
                     pose_mat = est.track_one(rgb=rgb, depth=depth, K=K, iteration=2)
+
+                if pose_mat is None:
+                    self.get_logger().warning(f'Pose estimator returned None for obj {obj_id}')
+                    self._estimators.pop(obj_id, None)
+                    continue
+
+                self._get_publisher(obj_id).publish(
+                    self._mat_to_pose_stamped(pose_mat, msg.header)
+                )
             except Exception as e:
                 self.get_logger().error(
                     f'Pose estimation failed for obj {obj_id}: {e}'
                 )
                 self._estimators.pop(obj_id, None)
-                continue
-
-            self._get_publisher(obj_id).publish(
-                self._mat_to_pose_stamped(pose_mat, msg.header)
-            )
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -167,7 +188,15 @@ class PoseEstimationNode(Node):
         if not os.path.isfile(path):
             self.get_logger().error(f'Mesh not found: {path}')
             return None
-        mesh = trimesh.load(path)
+        loaded = trimesh.load(path)
+        if isinstance(loaded, trimesh.Scene):
+            geometries = list(loaded.geometry.values())
+            if not geometries:
+                self.get_logger().error(f'No geometry in mesh file: {path}')
+                return None
+            mesh = trimesh.util.concatenate(geometries)
+        else:
+            mesh = loaded
         mesh.vertices = mesh.vertices / 1000.0  # mm → meters
         self._meshes[obj_id] = mesh
         return mesh
