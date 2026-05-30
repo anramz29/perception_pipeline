@@ -1,10 +1,20 @@
 # perception_pipeline
 
-ROS 2 package for 6-DoF object pose estimation using the T-LESS BOP dataset, targeting robotic manipulation perception.
+ROS 2 package for object detection using YOLO11 in C++ via ONNX Runtime, targeting robotic manipulation perception with the T-LESS BOP dataset.
+
+## Status
+
+- [x] C++ detector node (`src/detector_node.cpp`) — YOLO11 via ONNX Runtime
+- [x] T-LESS BOP dataset download + ROS 2 bag conversion scripts
+- [x] RViz visualization config
+- [ ] Pose estimation node (in progress)
+- [ ] TensorRT optimization
 
 ## Requirements
 
-- Ubuntu 22.04, ROS 2 Humble, Python 3.10
+- Ubuntu 22.04, ROS 2 Humble
+- C++17
+- ONNX Runtime 1.20.1 (aarch64)
 
 ## Installation
 
@@ -22,24 +32,19 @@ sudo apt update && sudo apt install \
   ros-humble-cv-bridge \
   ros-humble-sensor-msgs \
   ros-humble-geometry-msgs \
-  ros-humble-vision-msgs \
-  ros-humble-rosbag2-py \
-  python3-pip
+  ros-humble-vision-msgs
 ```
 
-### 3. Python dependencies
+### 3. ONNX Runtime
+
+Download `onnxruntime-linux-aarch64-1.20.1.tgz` from the [ONNX Runtime releases](https://github.com/microsoft/onnxruntime/releases) and install to `/usr/local`:
 
 ```bash
-pip3 install \
-  "numpy<2" \
-  "opencv-python<4.9" \
-  scipy \
-  huggingface_hub \
-  ultralytics \
-  --break-system-packages
+tar xzf onnxruntime-linux-aarch64-1.20.1.tgz
+sudo cp -r onnxruntime-linux-aarch64-1.20.1/include/* /usr/local/include/
+sudo cp -r onnxruntime-linux-aarch64-1.20.1/lib/*     /usr/local/lib/
+sudo ldconfig
 ```
-
-> `numpy<2` and `opencv-python<4.9` required for ROS 2 Humble cv_bridge compatibility.
 
 ### 4. Build
 
@@ -50,38 +55,45 @@ source install/setup.bash
 
 ## Dataset Setup
 
-Downloads ~860 MB of [T-LESS](https://bop.felk.cvut.cz/datasets/) from HuggingFace (CC BY 4.0).
+Utility scripts require Python 3 with `huggingface_hub`. Downloads ~860 MB of [T-LESS](https://bop.felk.cvut.cz/datasets/) (CC BY 4.0).
 
 ```bash
+pip3 install huggingface_hub rosbags
 python3 scripts/download_bop.py   # download + extract T-LESS
 python3 scripts/bop_to_rosbag.py  # convert to ROS 2 bag
+```
+
+## Export YOLO model to ONNX
+
+```bash
+pip3 install ultralytics
+python3 -c "from ultralytics import YOLO; YOLO('yolo11n.pt').export(format='onnx')"
+# outputs yolo11n.onnx — copy to models/
 ```
 
 ## Running
 
 ```bash
-ros2 launch perception_pipeline detect.launch.py
+ros2 launch perception_pipeline detect_cpp.launch.py
 ```
 
 Override defaults:
+
 ```bash
-ros2 launch perception_pipeline detect.launch.py \
+ros2 launch perception_pipeline detect_cpp.launch.py \
   bag_path:=/path/to/bag \
-  model_path:=/path/to/model.pt \
-  confidence_threshold:=0.5
+  model_path:=/path/to/yolo11n.onnx \
+  confidence_threshold:=0.25 \
+  nms_threshold:=0.45
 ```
 
 ## Topics
 
 | Topic | Type | Description |
 |---|---|---|
-| `/camera/rgb/image_raw` | `sensor_msgs/Image` | RGB frames |
-| `/camera/depth/image_raw` | `sensor_msgs/Image` | Depth frames |
-| `/camera/camera_info` | `sensor_msgs/CameraInfo` | Camera intrinsics |
-| `/detections` | `vision_msgs/Detection2DArray` | YOLO detections |
+| `/camera/rgb/image_raw` | `sensor_msgs/Image` | Input RGB frames |
+| `/detections` | `vision_msgs/Detection2DArray` | YOLO bounding boxes |
 | `/detections/debug_image` | `sensor_msgs/Image` | Annotated debug image |
-| `/gt_pose/obj_XXXXXX` | `geometry_msgs/PoseStamped` | Ground truth poses |
-
 
 ## Project Structure
 
@@ -94,12 +106,12 @@ perception_pipeline/
 │   ├── bags/
 │   └── tless/
 ├── launch/
-│   └── detect.launch.py
+│   └── detect_cpp.launch.py
 ├── models/
-│   └── yolo11n.pt               # gitignored
-├── perception_pipeline/
-│   └── detector_node.py
-└── scripts/
-    ├── download_bop.py
-    └── bop_to_rosbag.py
+│   └── yolo11n.onnx             # gitignored
+├── scripts/
+│   ├── download_bop.py
+│   └── bop_to_rosbag.py
+└── src/
+    └── detector_node.cpp
 ```
