@@ -15,11 +15,12 @@
 
 // yolov11 
 
-// this in progress at the moment, but the general structure is there. 
+// this is in progress at the moment, but the general structure is there. 
 
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
@@ -55,20 +56,23 @@ static cv::Mat letterbox(const cv::Mat& img, float& scale, int& pad_x, int& pad_
     scale = r;
 
     // Letterbox by resizing the image and copying it into a gray canvas.
-    cv::Mat out(NET_H, NET_W, CV_8UC3, cv::Scalar(114, 114, 114));
-    cv::Mat resized;
+    cv::Mat out(NET_H, NET_W, CV_8UC3, cv::Scalar(114, 114, 114)); //grey canvas as yolo was trained on it
+    cv::Mat resized; // paste initalize out rise params
     cv::resize(img, resized, cv::Size(nw, nh), 0, 0, cv::INTER_LINEAR);
-    resized.copyTo(out(cv::Rect(pad_x, pad_y, nw, nh)));
+    resized.copyTo(out(cv::Rect(pad_x, pad_y, nw, nh))); //paste image in the center
     return out;
 }
 
+// det structure
 // Intersection-over-Union between two detections.
 // Used by NMS to decide whether two boxes overlap enough to be duplicates.
 static float iou(const Det& a, const Det& b)
 {
     float ix1 = std::max(a.x1, b.x1), iy1 = std::max(a.y1, b.y1);
     float ix2 = std::min(a.x2, b.x2), iy2 = std::min(a.y2, b.y2);
+    // intersection area
     float inter = std::max(0.f, ix2 - ix1) * std::max(0.f, iy2 - iy1);
+    // compute the union is area a + b - union
     return inter / ((a.x2-a.x1)*(a.y2-a.y1) + (b.x2-b.x1)*(b.y2-b.y1) - inter + 1e-6f);
 }
 
@@ -89,12 +93,20 @@ static std::vector<Det> nms(std::vector<Det> dets, float thresh)
     std::sort(dets.begin(), dets.end(), [](const Det& a, const Det& b){
         return a.score > b.score;
     });
+
+    // define our dead array
     std::vector<bool> dead(dets.size(), false);
+
+    // our out "passing detections"
     std::vector<Det> out;
     for (size_t i = 0; i < dets.size(); ++i) {
+        // if survived add to the out
         if (dead[i]) continue;
         out.push_back(dets[i]);
         for (size_t j = i + 1; j < dets.size(); ++j)
+            // important to define the threshold, iou is intersect over
+            // overlap, so it's basically filtering about to get even better 
+            // results
             if (!dead[j] && iou(dets[i], dets[j]) > thresh) dead[j] = true;
     }
     return out;
@@ -113,11 +125,12 @@ public:
         declare_parameter("confidence_threshold", 0.25);
         declare_parameter("nms_threshold", 0.45);  // no equivalent in Python
 
-
+        // load our model and params
         auto model_path = get_parameter("model_path").as_string();
         conf_thresh_ = static_cast<float>(get_parameter("confidence_threshold").as_double());
         nms_thresh_  = static_cast<float>(get_parameter("nms_threshold").as_double());
 
+        // logic for setting the model path
         if (model_path.empty())
             throw std::runtime_error("model_path must be set");
 
@@ -125,7 +138,7 @@ public:
         Ort::SessionOptions opts;
         opts.SetIntraOpNumThreads(1); // YOLOv8 is single-threaded internally belive it or not
         opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED); // optimize for speed
-        session_ = std::make_unique<Ort::Session>(env_, model_path.c_str(), opts);
+        session_ = std::make_unique<Ort::Session>(env_, model_path.c_str(), opts); // intialize the session
 
         // ONNX models address inputs/outputs by string name, not index.
         // We read the names once at startup and reuse them every callback.
@@ -158,13 +171,17 @@ private:
             RCLCPP_ERROR(get_logger(), "cv_bridge: %s", e.what());
             return;
         }
+        // this allows us a non copy buffer this is why cpp is so much faster than python
         const cv::Mat& frame = cv_ptr->image;
 
         // ── Preprocessing ────────────────────────────────────────────────────
         // ultralytics did all of this internally in Python. Because we're calling
         // ONNX Runtime directly, we must replicate it ourselves.
 
+        // passed by refrence
         float scale; int pad_x, pad_y;
+
+        // create our letter box
         cv::Mat lb = letterbox(frame, scale, pad_x, pad_y);
 
         // YOLO was trained on RGB; OpenCV stores images as BGR by default.
@@ -179,28 +196,40 @@ private:
         // cv::split separates the three channels into individual planes, then
         // memcpy lays them out sequentially: RRRR...GGGG...BBBB...
         // In Python: numpy did this with img.transpose(2,0,1) then np.ascontiguousarray.
+        // We want to splut this due to NN processing the conv letter channel goes against all the layers
+        // we are given 3 640 * 640 blob matrix -> tensor
         std::vector<float> blob(3 * NET_H * NET_W);
         std::vector<cv::Mat> ch(3);
 
-        // ch[c] is a 640x640 single-channel view into the correct part of blob.
+        // takes the interweived HWC image and splits it into 3 seprate matrix
         cv::split(rgb, ch);
 
         // Copy each channel's data into the correct offset in the flat blob.
         for (int c = 0; c < 3; ++c)
-            std::memcpy(blob.data() + c * NET_H * NET_W,
-                        ch[c].ptr<float>(), NET_H * NET_W * sizeof(float));
+            std::memcpy(blob.data() + c * NET_H * NET_W, // destination offesting for each channel
+                        ch[c].ptr<float>(),  // the source
+                        NET_H * NET_W * sizeof(float)); // number of bites need to allocate
 
         // ── Inference ────────────────────────────────────────────────────────
         // Wrap the flat blob in an Ort::Value without copying — the tensor just
         // points at blob.data(). blob must stay alive for the duration of Run().
         std::array<int64_t, 4> shape{1, 3, NET_H, NET_W};
         auto mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+
+        // create our 4d tensor
         Ort::Value in = Ort::Value::CreateTensor<float>(
             mem, blob.data(), blob.size(), shape.data(), shape.size());
 
-        const char* in_names[]  = {input_name_.c_str()};
+        const char* in_names[]  = {input_name_.c_str()}; // what input and output names to use
         const char* out_names[] = {output_name_.c_str()};
-        auto outputs = session_->Run(Ort::RunOptions{nullptr}, in_names, &in, 1, out_names, 1);
+        auto outputs = session_->Run(
+            Ort::RunOptions{nullptr},  // default run options
+            in_names,                  // input names array
+            &in,                       // pointer to input tensor
+            1,                         // number of inputs (just 1)
+            out_names,                 // output names array
+            1                          // number of outputs (just 1)
+        );
 
         // ── Decode output ────────────────────────────────────────────────────
         // YOLO11/YOLOv8 ONNX output shape: [1, 4+num_classes, num_anchors]
@@ -238,9 +267,9 @@ private:
             // Reverse the letterbox transform: subtract padding, divide by scale.
             // Clamp to the original image bounds to handle edge detections cleanly.
             auto unpad = [&](float v, float pad, int dim) {
-                return std::clamp((v - pad) / scale, 0.f, float(dim));
+                return std::min(std::max((v - pad) / scale, 0.f), float(dim));
             };
-            dets.push_back({
+            dets.push_back(Det{
                 unpad(cx - w/2, pad_x, frame.cols),
                 unpad(cy - h/2, pad_y, frame.rows),
                 unpad(cx + w/2, pad_x, frame.cols),
