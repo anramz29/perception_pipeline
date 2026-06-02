@@ -15,6 +15,7 @@ find_package(vision_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(message_filters REQUIRED)
 
 # ── ONNX Runtime ──
 find_package(onnxruntime QUIET)
@@ -42,7 +43,13 @@ ament_target_dependencies(detector_node
   rclcpp std_msgs sensor_msgs vision_msgs cv_bridge OpenCV)
 target_link_libraries(detector_node onnxruntime::onnxruntime)
 
-install(TARGETS detector_node DESTINATION lib/${PROJECT_NAME})
+# ── bbox visualization node ──
+add_executable(bbox_viz_node src/bbox_viz_node.cpp)
+target_compile_features(bbox_viz_node PUBLIC cxx_std_17)
+ament_target_dependencies(bbox_viz_node
+  rclcpp sensor_msgs vision_msgs cv_bridge OpenCV message_filters)
+
+install(TARGETS detector_node bbox_viz_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY models/ DESTINATION share/${PROJECT_NAME}/models)

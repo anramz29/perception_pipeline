@@ -6,6 +6,7 @@ from geometry_msgs.msg import PoseStamped # for ground truth poses
 from cv_bridge import CvBridge # for converting OpenCV images to ROS messages
 from scipy.spatial.transform import Rotation # for converting rotation matrices to quaternions
 import cv2, json, numpy as np, os # for file handling and data processing
+from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesisWithPose
 
 # improting cv bridge
 bridge = CvBridge() 
@@ -18,6 +19,10 @@ output_path = f"{base}/bags/tless_scene1"
 # Load camera parameters and ground truth poses
 with open(f"{scene_path}/scene_camera.json") as f:
     cameras = json.load(f)
+
+# Load ground truth bbox detections
+with open(f"{scene_path}/scene_gt_info.json") as f:
+    bboxes = json.load(f)
 
 # Load ground truth poses (if available)
 with open(f"{scene_path}/scene_gt.json") as f:
@@ -43,6 +48,9 @@ writer.create_topic(rosbag2_py.TopicMetadata(
     name='/camera/depth/image_raw', type='sensor_msgs/msg/Image', serialization_format='cdr'))
 writer.create_topic(rosbag2_py.TopicMetadata(
     name='/camera/camera_info', type='sensor_msgs/msg/CameraInfo', serialization_format='cdr'))
+writer.create_topic(rosbag2_py.TopicMetadata(
+    name='/gt_detections', type='vision_msgs/msg/Detection2DArray', serialization_format='cdr'))
+
 
 # register a topic per object (up to 30 in T-LESS)
 for obj_id in range(1, 31):
@@ -96,6 +104,34 @@ for img_id_str, cam_data in cameras.items():
         pose.pose.orientation.w = float(quat[3])
 
         writer.write(f"/gt_pose/obj_{gt['obj_id']:06d}", serialize_message(pose), t_ns)
+
+    # Bboxes
+    det_arr = Detection2DArray()
+    det_arr.header.stamp = rgb_msg.header.stamp
+    det_arr.header.frame_id = "camera_link"
+
+    boxes_this_img = bboxes.get(img_id_str, [])
+    gts_this_img   = ground_truth.get(img_id_str, [])
+
+    # zip pairs box[i] with pose[i] — same object, same order
+    for box_info, gt in zip(boxes_this_img, gts_this_img):
+        x, y, w, h = box_info["bbox_visib"]   # [x, y, width, height]
+
+        d2 = Detection2D()
+        d2.header = det_arr.header
+        d2.bbox.center.position.x = float(x + w / 2.0)   # center, not corner
+        d2.bbox.center.position.y = float(y + h / 2.0)
+        d2.bbox.size_x = float(w)
+        d2.bbox.size_y = float(h)
+
+        hyp = ObjectHypothesisWithPose()
+        hyp.hypothesis.class_id = str(gt["obj_id"])  # real T-LESS object id
+        hyp.hypothesis.score = 1.0                    # ground truth = full confidence
+        d2.results.append(hyp)
+
+        det_arr.detections.append(d2)
+
+    writer.write('/gt_detections', serialize_message(det_arr), t_ns)
 
 del writer
 print(f"Bag saved to {output_path}")
