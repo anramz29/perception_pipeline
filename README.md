@@ -1,15 +1,23 @@
 # perception_pipeline
 
-ROS 2 package for object detection using YOLO11 in C++ via ONNX Runtime, targeting robotic manipulation perception with the T-LESS BOP dataset.
+ROS 2 package for 6DoF object pose estimation targeting robotic manipulation with the T-LESS BOP dataset. The pipeline uses ground-truth 2D bounding boxes as a development scaffold while pose estimation is built out, with a fine-tuned 2D detector as a final integration step.
+
+## Pipeline
+
+1. **2D detection** — ground-truth bboxes from T-LESS (`/gt_detections`) stand in during development; a fine-tuned YOLO model replaces this last
+2. **Point localization** — back-projects each detection centroid to 3D using depth + camera intrinsics
+3. **ICP** — refines the initial 3D point to a full 6DoF pose by aligning object CAD models against the depth point cloud
+4. **Detector fine-tuning + TensorRT export** — train YOLO on T-LESS, export to TensorRT for deployment
 
 ## Status
 
-- [x] C++ detector node (`src/detector_node.cpp`) — YOLO11 via ONNX Runtime
-- [x] T-LESS BOP dataset download + ROS 2 bag conversion (`scripts/bop_to_rosbag.py`), including `/gt_detections` ground-truth bounding boxes
-- [x] Ground-truth detection viz node (`src/bbox_viz_node.cpp`) — validation scaffold for pose estimation testing
+- [x] T-LESS BOP dataset download + ROS 2 bag conversion (`scripts/bop_to_rosbag.py`), including ground-truth bounding boxes and per-object poses
+- [x] Ground-truth bbox viz node (`src/bbox_viz_node.cpp`) — overlays bboxes on RGB for visual validation
 - [x] RViz visualization config
-- [ ] Pose estimation node (in progress)
-- [ ] TensorRT optimization
+- [x] Point localization node (`src/point_localization_node.cpp`) — back-projects detection centroids to 3D using depth + camera intrinsics
+- [ ] ICP pose refinement against T-LESS CAD models
+- [ ] Evaluation against ground-truth poses
+- [ ] YOLO fine-tuning on T-LESS + TensorRT export
 
 ## Requirements
 
@@ -65,61 +73,32 @@ python3 scripts/download_bop.py   # download + extract T-LESS
 python3 scripts/bop_to_rosbag.py  # convert to ROS 2 bag
 ```
 
-`bop_to_rosbag.py` converts scene `test_primesense/000001` — which contains T-LESS objects **2, 25, 29, and 30** — into a ROS 2 bag. In addition to RGB, depth, camera info, and per-object ground-truth pose topics, it also publishes a `/gt_detections` topic (`vision_msgs/Detection2DArray`).
-
-`/gt_detections` is a **temporary validation scaffold**: it provides perfect 2D bounding boxes so pose estimation can be developed and evaluated before the YOLO detector is fine-tuned on T-LESS. Once the detector is trained, `/gt_detections` will be replaced by live YOLO output.
-
-Each detection is built by pairing entries from two parallel JSON files in the scene directory:
-
-| File | Content used |
-|---|---|
-| `scene_gt_info.json` | `bbox_visib` — the visible bounding box `[x, y, w, h]` |
-| `scene_gt.json` | `obj_id` — the T-LESS object identity |
-
-Entry *N* in each file refers to the same object instance, so the script zips them together. Boxes are stored as center + half-size (the `vision_msgs` convention), with the T-LESS object ID in `hypothesis.class_id`.
-
-## Export YOLO model to ONNX
-
-```bash
-pip3 install ultralytics
-python3 -c "from ultralytics import YOLO; YOLO('yolo11n.pt').export(format='onnx')"
-# outputs yolo11n.onnx — copy to models/
-```
+`bop_to_rosbag.py` converts scene `test_primesense/000001` — which contains T-LESS objects **2, 25, 29, and 30** — into a ROS 2 bag with RGB, depth, camera info, per-object ground-truth poses, and `/gt_detections` (perfect 2D bounding boxes used in place of a trained detector during development).
 
 ## Running
 
-### Full detector pipeline
+### Point localization pipeline
+
+Plays the bag, runs the ground-truth bbox viz node, and runs the point localization node:
 
 ```bash
-ros2 launch perception_pipeline detect_cpp.launch.py
-```
-
-Override defaults:
-
-```bash
-ros2 launch perception_pipeline detect_cpp.launch.py \
-  bag_path:=/path/to/bag \
-  model_path:=/path/to/yolo11n.onnx \
-  confidence_threshold:=0.25 \
-  nms_threshold:=0.45
-```
-
-### Ground-truth detection visualizer
-
-Plays the bag in a loop and runs the bbox viz node, which overlays ground-truth bounding boxes and class-id labels on the RGB stream:
-
-```bash
-ros2 launch perception_pipeline detect_viz.launch.py
+ros2 launch perception_pipeline pose_estimation.launch.py
 ```
 
 Override the bag path:
 
 ```bash
-ros2 launch perception_pipeline detect_viz.launch.py \
+ros2 launch perception_pipeline pose_estimation.launch.py \
   bag_path:=/path/to/bag
 ```
 
-Monitor the annotated output in RViz or with `ros2 topic echo /gt_detections_debug`.
+Monitor estimated positions with `ros2 topic echo /estimated_pose`.
+
+### Ground-truth bbox visualizer
+
+```bash
+ros2 launch perception_pipeline detect_viz.launch.py
+```
 
 ## Topics
 
@@ -128,31 +107,32 @@ Monitor the annotated output in RViz or with `ros2 topic echo /gt_detections_deb
 | `/camera/rgb/image_raw` | `sensor_msgs/Image` | Input RGB frames |
 | `/camera/depth/image_raw` | `sensor_msgs/Image` | Input depth frames |
 | `/camera/camera_info` | `sensor_msgs/CameraInfo` | Camera intrinsics |
-| `/gt_pose/obj_<id>` | `geometry_msgs/PoseStamped` | Ground-truth pose per object (from `scene_gt.json`) |
-| `/gt_detections` | `vision_msgs/Detection2DArray` | Ground-truth 2D bounding boxes (from `scene_gt_info.json` + `scene_gt.json`) — validation scaffold |
-| `/gt_detections_debug` | `sensor_msgs/Image` | RGB image annotated with ground-truth bounding boxes and class-id labels |
-| `/detections` | `vision_msgs/Detection2DArray` | YOLO bounding boxes (live detector) |
-| `/detections/debug_image` | `sensor_msgs/Image` | Annotated debug image from YOLO detector |
+| `/gt_pose/obj_<id>` | `geometry_msgs/PoseStamped` | Ground-truth pose per object |
+| `/gt_detections` | `vision_msgs/Detection2DArray` | Ground-truth 2D bounding boxes — development scaffold |
+| `/gt_detections_debug` | `sensor_msgs/Image` | RGB annotated with ground-truth bounding boxes |
+| `/estimated_pose` | `geometry_msgs/PoseStamped` | 3D position back-projected from depth (identity orientation until ICP) |
 
 ## Project Structure
 
 ```
 perception_pipeline/
 ├── config/
-│   ├── detector_params.yaml
+│   ├── detector_params.yaml       # YOLO params — not active focus
 │   └── tless_viz.rviz
-├── data/                        # gitignored
+├── data/                          # gitignored
 │   ├── bags/
 │   └── tless/
 ├── launch/
-│   ├── detect_cpp.launch.py     # YOLO detector + bag playback
-│   └── detect_viz.launch.py     # ground-truth bbox viz + bag playback
+│   ├── detect_cpp.launch.py       # YOLO detector — not active focus
+│   ├── detect_viz.launch.py       # ground-truth bbox viz + bag playback
+│   └── pose_estimation.launch.py  # bbox viz + point localization + bag playback
 ├── models/
-│   └── yolo11n.onnx             # gitignored
+│   └── yolo11n.onnx               # gitignored — not active focus
 ├── scripts/
 │   ├── download_bop.py
 │   └── bop_to_rosbag.py
 └── src/
-    ├── detector_node.cpp        # YOLO11 via ONNX Runtime
-    └── bbox_viz_node.cpp        # ground-truth bbox overlay (message_filters ApproximateTime)
+    ├── detector_node.cpp           # YOLO11 via ONNX Runtime — not active focus
+    ├── bbox_viz_node.cpp           # ground-truth bbox overlay
+    └── point_localization_node.cpp # back-projects detection centroids to 3D
 ```

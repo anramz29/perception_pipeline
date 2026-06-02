@@ -11,6 +11,7 @@
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <cmath>
 
 
 // message_filters: lets us subscribe to multiple topics and get a single
@@ -46,12 +47,56 @@ public:
                       std::placeholders::_3));
 
         RCLCPP_INFO(get_logger(), "bbox_viz started, publishing /estimated_pose");
+
+        
     }
 private:
     void callback(const Detection2DArray::ConstSharedPtr& det_msg,
                     const Image::ConstSharedPtr& depth_msg,
                     const CameraInfo::ConstSharedPtr& info_msg)
         {
+            // pull out the camera intrinsics
+            double fx = info_msg->k[0];
+            double cx = info_msg->k[2];
+            double fy = info_msg->k[4];
+            double cy = info_msg->k[5];
+            
+            // convert depth image to cv mat
+            cv_bridge::CvImageConstPtr cv_ptr;
+            try {
+                cv_ptr = cv_bridge::toCvShare(depth_msg, "32FC1");
+            } catch (const cv_bridge::Exception& e) {
+                RCLCPP_ERROR(get_logger(), "cv_bridge: %s", e.what());
+                return;
+            }
+            const cv::Mat& depth = cv_ptr->image;
+
+            for (const auto& det : det_msg->detections){
+                // get the center pixel
+                int u = static_cast<int>(det.bbox.center.position.x);
+                int v = static_cast<int>(det.bbox.center.position.y);
+
+                // note: (row, col) = (v, u), y first!
+                float Z = depth.at<float>(v, u);   
+
+                // skip bad depth
+                if (Z <= 0.0f || std::isnan(Z)) continue;  
+
+                // actual back project algo
+                double X = (u - cx) * Z / fx;
+                double Y = (v - cy) * Z / fy;
+                double Zp = Z;
+
+                PoseStamped pose;
+                pose.header.stamp = depth_msg->header.stamp;        // reuse stamp + frame_id (camera_link)
+                pose.header.frame_id = "camera_link";
+                pose.pose.position.x = X;
+                pose.pose.position.y = Y;
+                pose.pose.position.z = Zp;
+                pose.pose.orientation.w = 1.0;          // identity rotation (no orientation yet)
+            
+                pose_pub_->publish(pose);
+            }
 
 
         }
@@ -65,6 +110,9 @@ private:
         message_filters::Subscriber<CameraInfo> info_sub_;
         std::shared_ptr<Sync> sync_;
         rclcpp::Publisher<PoseStamped>::SharedPtr pose_pub_;
+
+
+
         
 };
 
