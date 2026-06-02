@@ -49,7 +49,13 @@ target_compile_features(bbox_viz_node PUBLIC cxx_std_17)
 ament_target_dependencies(bbox_viz_node
   rclcpp sensor_msgs vision_msgs cv_bridge OpenCV message_filters)
 
-install(TARGETS detector_node bbox_viz_node DESTINATION lib/${PROJECT_NAME})
+  # -- 3D point localization Node
+add_executable(point_localization_node src/point_localization_node.cpp)
+target_compile_features(point_localization_node PUBLIC cxx_std_17)
+ament_target_dependencies(point_localization_node
+  rclcpp sensor_msgs vision_msgs cv_bridge geometry_msgs OpenCV message_filters)
+
+install(TARGETS detector_node bbox_viz_node point_localization_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY models/ DESTINATION share/${PROJECT_NAME}/models)
