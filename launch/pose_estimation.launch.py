@@ -32,6 +32,7 @@ def generate_launch_description():
         output="screen",
     )
 
+
     return LaunchDescription(
             [
                 bag_path_arg,

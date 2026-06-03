@@ -110,10 +110,6 @@ private:
         message_filters::Subscriber<CameraInfo> info_sub_;
         std::shared_ptr<Sync> sync_;
         rclcpp::Publisher<PoseStamped>::SharedPtr pose_pub_;
-
-
-
-        
 };
 
 int main(int argc, char** argv)

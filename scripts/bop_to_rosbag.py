@@ -50,6 +50,8 @@ writer.create_topic(rosbag2_py.TopicMetadata(
     name='/camera/camera_info', type='sensor_msgs/msg/CameraInfo', serialization_format='cdr'))
 writer.create_topic(rosbag2_py.TopicMetadata(
     name='/gt_detections', type='vision_msgs/msg/Detection2DArray', serialization_format='cdr'))
+writer.create_topic(rosbag2_py.TopicMetadata(
+    name='/gt_instance_mask', type='sensor_msgs/msg/Image', serialization_format='cdr'))
 
 
 # register a topic per object (up to 30 in T-LESS)
@@ -85,8 +87,29 @@ for img_id_str, cam_data in cameras.items():
     info.k = cam_data["cam_K"]  # lowercase k in ROS 2
     writer.write('/camera/camera_info', serialize_message(info), t_ns)
 
+    gts_this_img = ground_truth.get(img_id_str, [])
+
+    # Instance segmentation mask (one label image, unique value per instance)
+    # mask_visib files are named {img_id:06d}_{instance_idx:06d}.png, ordered like scene_gt
+    instance_mask = None
+    for inst_idx in range(len(gts_this_img)):
+        mask_file = f"{scene_path}/mask_visib/{img_id:06d}_{inst_idx:06d}.png"
+        m = cv2.imread(mask_file, cv2.IMREAD_GRAYSCALE)
+        if m is None:
+            continue
+        if instance_mask is None:
+            instance_mask = np.zeros(m.shape, dtype=np.uint16)
+        # label = instance index + 1 (0 = background)
+        instance_mask[m > 0] = inst_idx + 1
+
+    if instance_mask is not None:
+        mask_msg = bridge.cv2_to_imgmsg(instance_mask, encoding="mono16")
+        mask_msg.header.stamp = rgb_msg.header.stamp
+        mask_msg.header.frame_id = "camera_link"
+        writer.write('/gt_instance_mask', serialize_message(mask_msg), t_ns)
+
     # Ground Truth Poses
-    for gt in ground_truth.get(img_id_str, []):
+    for gt in gts_this_img:
         R = np.array(gt["cam_R_m2c"]).reshape(3, 3)
         t_vec = np.array(gt["cam_t_m2c"]) / 1000.0
 
@@ -111,7 +134,6 @@ for img_id_str, cam_data in cameras.items():
     det_arr.header.frame_id = "camera_link"
 
     boxes_this_img = bboxes.get(img_id_str, [])
-    gts_this_img   = ground_truth.get(img_id_str, [])
 
     # zip pairs box[i] with pose[i] — same object, same order
     for box_info, gt in zip(boxes_this_img, gts_this_img):

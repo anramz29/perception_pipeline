@@ -11,7 +11,7 @@ ROS 2 package for 6DoF object pose estimation targeting robotic manipulation wit
 
 ## Status
 
-- [x] T-LESS BOP dataset download + ROS 2 bag conversion (`scripts/bop_to_rosbag.py`), including ground-truth bounding boxes and per-object poses
+- [x] T-LESS BOP dataset download + ROS 2 bag conversion (`scripts/bop_to_rosbag.py`), including ground-truth bounding boxes, per-object poses, and instance segmentation masks
 - [x] Ground-truth bbox viz node (`src/bbox_viz_node.cpp`) — overlays bboxes on RGB for visual validation
 - [x] RViz visualization config
 - [x] Point localization node (`src/point_localization_node.cpp`) — back-projects detection centroids to 3D using depth + camera intrinsics
@@ -73,7 +73,7 @@ python3 scripts/download_bop.py   # download + extract T-LESS
 python3 scripts/bop_to_rosbag.py  # convert to ROS 2 bag
 ```
 
-`bop_to_rosbag.py` converts scene `test_primesense/000001` — which contains T-LESS objects **2, 25, 29, and 30** — into a ROS 2 bag with RGB, depth, camera info, per-object ground-truth poses, and `/gt_detections` (perfect 2D bounding boxes used in place of a trained detector during development).
+`bop_to_rosbag.py` converts scene `test_primesense/000001` — which contains T-LESS objects **2, 25, 29, and 30** — into a ROS 2 bag with RGB, depth, camera info, per-object ground-truth poses, `/gt_detections` (perfect 2D bounding boxes used in place of a trained detector during development), and `/gt_instance_mask` (a `mono16` label image where each visible instance is assigned a unique integer label; 0 = background).
 
 ## Running
 
@@ -94,6 +94,8 @@ ros2 launch perception_pipeline pose_estimation.launch.py \
 
 Monitor estimated positions with `ros2 topic echo /estimated_pose`.
 
+![Ground-truth poses and detections in RViz](docs/images/gt_poses_rviz.png)
+
 ### Ground-truth bbox visualizer
 
 ```bash
@@ -110,6 +112,7 @@ ros2 launch perception_pipeline detect_viz.launch.py
 | `/gt_pose/obj_<id>` | `geometry_msgs/PoseStamped` | Ground-truth pose per object |
 | `/gt_detections` | `vision_msgs/Detection2DArray` | Ground-truth 2D bounding boxes — development scaffold |
 | `/gt_detections_debug` | `sensor_msgs/Image` | RGB annotated with ground-truth bounding boxes |
+| `/gt_instance_mask` | `sensor_msgs/Image` | `mono16` label image — unique integer per visible instance, 0 = background |
 | `/estimated_pose` | `geometry_msgs/PoseStamped` | 3D position back-projected from depth (identity orientation until ICP) |
 
 ## Project Structure
