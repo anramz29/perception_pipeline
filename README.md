@@ -112,7 +112,7 @@ ros2 launch perception_pipeline detect_viz.launch.py
 | `/gt_pose/obj_<id>` | `geometry_msgs/PoseStamped` | Ground-truth pose per object |
 | `/gt_detections` | `vision_msgs/Detection2DArray` | Ground-truth 2D bounding boxes — development scaffold |
 | `/gt_detections_debug` | `sensor_msgs/Image` | RGB annotated with ground-truth bounding boxes |
-| `/gt_instance_mask` | `sensor_msgs/Image` | `mono16` label image — unique integer per visible instance, 0 = background |
+| `/gt_instance_mask` | `sensor_msgs/Image` | `mono16` mask of only a certain object in this case obj_2 |
 | `/estimated_pose` | `geometry_msgs/PoseStamped` | 3D position back-projected from depth (identity orientation until ICP) |
 
 ## Project Structure

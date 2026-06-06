@@ -8,8 +8,13 @@ from scipy.spatial.transform import Rotation # for converting rotation matrices 
 import cv2, json, numpy as np, os # for file handling and data processing
 from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesisWithPose
 
-# improting cv bridge
-bridge = CvBridge() 
+# importing cv bridge
+bridge = CvBridge()
+
+# target object — only object 2 for now
+TARGET_OBJ_ID = 2
+# instance index in scene_gt that corresponds to object 2 (0-based)
+TARGET_INST_IDX = 1  # _000001.png
 
 # Define paths
 base = os.path.expanduser('~/ros2_ws/src/perception_pipeline/data')
@@ -24,21 +29,15 @@ with open(f"{scene_path}/scene_camera.json") as f:
 with open(f"{scene_path}/scene_gt_info.json") as f:
     bboxes = json.load(f)
 
-# Load ground truth poses (if available)
+# Load ground truth poses
 with open(f"{scene_path}/scene_gt.json") as f:
     ground_truth = json.load(f)
 
 # setup writer
 writer = rosbag2_py.SequentialWriter()
 
-# configure storage options (using SQLite3 backend)
 storage_options = rosbag2_py.StorageOptions(uri=output_path, storage_id='sqlite3')
-
-
-# configure converter options (using default, no compression)
 converter_options = rosbag2_py.ConverterOptions('', '')
-
-# open the bag for writing
 writer.open(storage_options, converter_options)
 
 # register topics
@@ -52,14 +51,14 @@ writer.create_topic(rosbag2_py.TopicMetadata(
     name='/gt_detections', type='vision_msgs/msg/Detection2DArray', serialization_format='cdr'))
 writer.create_topic(rosbag2_py.TopicMetadata(
     name='/gt_instance_mask', type='sensor_msgs/msg/Image', serialization_format='cdr'))
-
-
-# register a topic per object (up to 30 in T-LESS)
-for obj_id in range(1, 31):
-    writer.create_topic(rosbag2_py.TopicMetadata(
-        name=f'/gt_pose/obj_{obj_id:06d}',
-        type='geometry_msgs/msg/PoseStamped',
-        serialization_format='cdr'))
+writer.create_topic(rosbag2_py.TopicMetadata(
+    name=f'/gt_pose/obj_{TARGET_OBJ_ID:06d}',
+    type='geometry_msgs/msg/PoseStamped',
+    serialization_format='cdr'))
+writer.create_topic(rosbag2_py.TopicMetadata(
+    name='/camera_pose',
+    type='geometry_msgs/msg/PoseStamped',
+    serialization_format='cdr'))
 
 # Process each image and write to the bag
 for img_id_str, cam_data in cameras.items():
@@ -84,76 +83,90 @@ for img_id_str, cam_data in cameras.items():
     # Camera Info
     info = CameraInfo()
     info.header.stamp = rgb_msg.header.stamp
-    info.k = cam_data["cam_K"]  # lowercase k in ROS 2
+    info.k = cam_data["cam_K"]
     writer.write('/camera/camera_info', serialize_message(info), t_ns)
 
     gts_this_img = ground_truth.get(img_id_str, [])
+    boxes_this_img = bboxes.get(img_id_str, [])
 
-    # Instance segmentation mask (one label image, unique value per instance)
-    # mask_visib files are named {img_id:06d}_{instance_idx:06d}.png, ordered like scene_gt
-    instance_mask = None
-    for inst_idx in range(len(gts_this_img)):
-        mask_file = f"{scene_path}/mask_visib/{img_id:06d}_{inst_idx:06d}.png"
-        m = cv2.imread(mask_file, cv2.IMREAD_GRAYSCALE)
-        if m is None:
-            continue
-        if instance_mask is None:
-            instance_mask = np.zeros(m.shape, dtype=np.uint16)
-        # label = instance index + 1 (0 = background)
-        instance_mask[m > 0] = inst_idx + 1
+    # Find the entry for TARGET_OBJ_ID in this frame
+    target_gt = None
+    target_box = None
+    for box_info, gt in zip(boxes_this_img, gts_this_img):
+        if gt["obj_id"] == TARGET_OBJ_ID:
+            target_gt = gt
+            target_box = box_info
+            break
 
-    if instance_mask is not None:
-        mask_msg = bridge.cv2_to_imgmsg(instance_mask, encoding="mono16")
-        mask_msg.header.stamp = rgb_msg.header.stamp
-        mask_msg.header.frame_id = "camera_link"
-        writer.write('/gt_instance_mask', serialize_message(mask_msg), t_ns)
+    if target_gt is None:
+        # object not visible in this frame, skip pose/mask/detection
+        continue
 
-    # Ground Truth Poses
-    for gt in gts_this_img:
-        R = np.array(gt["cam_R_m2c"]).reshape(3, 3)
-        t_vec = np.array(gt["cam_t_m2c"]) / 1000.0
+    R = np.array(target_gt["cam_R_m2c"]).reshape(3, 3)
+    t_vec = np.array(target_gt["cam_t_m2c"]) / 1000.0  # mm -> m
 
-        pose = PoseStamped()
-        pose.header.stamp = rgb_msg.header.stamp
-        pose.header.frame_id = "camera_link"
-        pose.pose.position.x = float(t_vec[0]) # converting to float for ROS message compatibility
-        pose.pose.position.y = float(t_vec[1])
-        pose.pose.position.z = float(t_vec[2])
+    # ── Ground truth object pose (object in camera frame) ───────────────────
+    pose = PoseStamped()
+    pose.header.stamp = rgb_msg.header.stamp
+    pose.header.frame_id = "camera_link"
+    pose.pose.position.x = float(t_vec[0])
+    pose.pose.position.y = float(t_vec[1])
+    pose.pose.position.z = float(t_vec[2])
+    quat = Rotation.from_matrix(R).as_quat()
+    pose.pose.orientation.x = float(quat[0])
+    pose.pose.orientation.y = float(quat[1])
+    pose.pose.orientation.z = float(quat[2])
+    pose.pose.orientation.w = float(quat[3])
+    writer.write(f"/gt_pose/obj_{TARGET_OBJ_ID:06d}", serialize_message(pose), t_ns)
 
-        quat = Rotation.from_matrix(R).as_quat()
-        pose.pose.orientation.x = float(quat[0])
-        pose.pose.orientation.y = float(quat[1])
-        pose.pose.orientation.z = float(quat[2])
-        pose.pose.orientation.w = float(quat[3])
+    # ── Camera pose in world frame (invert the object->camera transform) ────
+    # Forward:  X_cam = R * X_world + t   (object in camera frame)
+    # Inverse:  X_world = R^T * X_cam - R^T * t  (camera in world frame)
+    R_inv = R.T
+    t_inv = -R_inv @ t_vec
+    cam_pose = PoseStamped()
+    cam_pose.header.stamp = rgb_msg.header.stamp
+    cam_pose.header.frame_id = "world"
+    cam_pose.pose.position.x = float(t_inv[0])
+    cam_pose.pose.position.y = float(t_inv[1])
+    cam_pose.pose.position.z = float(t_inv[2])
+    quat_inv = Rotation.from_matrix(R_inv).as_quat()
+    cam_pose.pose.orientation.x = float(quat_inv[0])
+    cam_pose.pose.orientation.y = float(quat_inv[1])
+    cam_pose.pose.orientation.z = float(quat_inv[2])
+    cam_pose.pose.orientation.w = float(quat_inv[3])
+    writer.write('/camera_pose', serialize_message(cam_pose), t_ns)
 
-        writer.write(f"/gt_pose/obj_{gt['obj_id']:06d}", serialize_message(pose), t_ns)
-
-    # Bboxes
+    # ── Detection (single object only) ──────────────────────────────────────
     det_arr = Detection2DArray()
     det_arr.header.stamp = rgb_msg.header.stamp
     det_arr.header.frame_id = "camera_link"
 
-    boxes_this_img = bboxes.get(img_id_str, [])
-
-    # zip pairs box[i] with pose[i] — same object, same order
-    for box_info, gt in zip(boxes_this_img, gts_this_img):
-        x, y, w, h = box_info["bbox_visib"]   # [x, y, width, height]
-
-        d2 = Detection2D()
-        d2.header = det_arr.header
-        d2.bbox.center.position.x = float(x + w / 2.0)   # center, not corner
-        d2.bbox.center.position.y = float(y + h / 2.0)
-        d2.bbox.size_x = float(w)
-        d2.bbox.size_y = float(h)
-
-        hyp = ObjectHypothesisWithPose()
-        hyp.hypothesis.class_id = str(gt["obj_id"])  # real T-LESS object id
-        hyp.hypothesis.score = 1.0                    # ground truth = full confidence
-        d2.results.append(hyp)
-
-        det_arr.detections.append(d2)
-
+    x, y, w, h = target_box["bbox_visib"]
+    d2 = Detection2D()
+    d2.header = det_arr.header
+    d2.bbox.center.position.x = float(x + w / 2.0)
+    d2.bbox.center.position.y = float(y + h / 2.0)
+    d2.bbox.size_x = float(w)
+    d2.bbox.size_y = float(h)
+    hyp = ObjectHypothesisWithPose()
+    hyp.hypothesis.class_id = str(TARGET_OBJ_ID)
+    hyp.hypothesis.score = 1.0
+    d2.results.append(hyp)
+    det_arr.detections.append(d2)
     writer.write('/gt_detections', serialize_message(det_arr), t_ns)
+
+    # ── Instance mask (visible portion only) ────────────────────────────────
+    # mask_visib = only the visible pixels (occlusion-aware) — correct for ICP
+    mask_file = f"{scene_path}/mask_visib/{img_id:06d}_{TARGET_INST_IDX:06d}.png"
+    m = cv2.imread(mask_file, cv2.IMREAD_GRAYSCALE)
+    if m is not None:
+        instance_mask = np.zeros(m.shape, dtype=np.uint16)
+        instance_mask[m > 0] = TARGET_OBJ_ID  # label pixels with the object id
+        mask_msg = bridge.cv2_to_imgmsg(instance_mask, encoding="mono16")
+        mask_msg.header.stamp = rgb_msg.header.stamp
+        mask_msg.header.frame_id = "camera_link"
+        writer.write('/gt_instance_mask', serialize_message(mask_msg), t_ns)
 
 del writer
 print(f"Bag saved to {output_path}")

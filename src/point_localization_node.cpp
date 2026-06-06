@@ -46,7 +46,7 @@ public:
                       std::placeholders::_2, 
                       std::placeholders::_3));
 
-        RCLCPP_INFO(get_logger(), "bbox_viz started, publishing /estimated_pose");
+        RCLCPP_INFO(get_logger(), "started, publishing /estimated_pose");
 
         
     }
@@ -76,11 +76,21 @@ private:
                 int u = static_cast<int>(det.bbox.center.position.x);
                 int v = static_cast<int>(det.bbox.center.position.y);
 
-                // note: (row, col) = (v, u), y first!
-                float Z = depth.at<float>(v, u);   
+                // too close to the left or right side and top and bottom
+                if (u < 2 || u >= depth.cols -2 || v < 2 || v >= depth.rows -2) continue;
 
-                // skip bad depth
-                if (Z <= 0.0f || std::isnan(Z)) continue;  
+                // average depth over a 5 by 5 window
+                float Z = 0.0f;
+                int count = 0;
+                for (int row = v -2; row <= v +2; row++){
+                    for (int col = u -2; col <= u +2; col++){
+                        float d = depth.at<float>(row, col);
+                        if (d > 0.0f && !std::isnan(d)){Z += d; count ++;}
+                    }
+                }
+                if (count == 0) continue;
+                Z /= count;
+
 
                 // actual back project algo
                 double X = (u - cx) * Z / fx;

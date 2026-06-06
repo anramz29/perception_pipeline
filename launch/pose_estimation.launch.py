@@ -32,6 +32,13 @@ def generate_launch_description():
         output="screen",
     )
 
+    static_tf = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="static_tf_camera",
+        arguments=["0", "0", "0", "0", "0", "0", "world", "camera_link"],
+    )
+
 
     return LaunchDescription(
             [
@@ -39,5 +46,6 @@ def generate_launch_description():
                 bag_play,
                 bbox_viz_node,
                 point_localization_node,
+                static_tf
             ]
     )

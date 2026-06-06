@@ -16,6 +16,9 @@ find_package(geometry_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(message_filters REQUIRED)
+find_package(PCL REQUIRED)
+find_package(pcl_ros REQUIRED)
+find_package(pcl_conversions REQUIRED)
 
 # ── ONNX Runtime ──
 find_package(onnxruntime QUIET)
@@ -55,10 +58,21 @@ target_compile_features(point_localization_node PUBLIC cxx_std_17)
 ament_target_dependencies(point_localization_node
   rclcpp sensor_msgs vision_msgs cv_bridge geometry_msgs OpenCV message_filters)
 
-install(TARGETS detector_node bbox_viz_node point_localization_node DESTINATION lib/${PROJECT_NAME})
+  # new icp node
+add_executable(icp_node src/icp_node.cpp)
+target_compile_features(icp_node PUBLIC cxx_std_17)
+ament_target_dependencies(icp_node
+  rclcpp sensor_msgs vision_msgs geometry_msgs
+  cv_bridge OpenCV message_filters pcl_ros pcl_conversions)
+target_link_libraries(icp_node ${PCL_LIBRARIES})
+target_include_directories(icp_node PUBLIC ${PCL_INCLUDE_DIRS})
+
+# add to install
+install(TARGETS detector_node bbox_viz_node point_localization_node icp_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY models/ DESTINATION share/${PROJECT_NAME}/models)
+
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -66,5 +80,11 @@ if(BUILD_TESTING)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 endif()
+
+
+
+
+
+
 
 ament_package()
