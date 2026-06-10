@@ -11,10 +11,8 @@ from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesisWithP
 # importing cv bridge
 bridge = CvBridge()
 
-# target object — only object 2 for now
-TARGET_OBJ_ID = 2
-# instance index in scene_gt that corresponds to object 2 (0-based)
-TARGET_INST_IDX = 1  # _000001.png
+# target object
+TARGET_OBJ_ID = 25
 
 # Define paths
 base = os.path.expanduser('~/ros2_ws/src/perception_pipeline/data')
@@ -52,7 +50,7 @@ writer.create_topic(rosbag2_py.TopicMetadata(
 writer.create_topic(rosbag2_py.TopicMetadata(
     name='/gt_instance_mask', type='sensor_msgs/msg/Image', serialization_format='cdr'))
 writer.create_topic(rosbag2_py.TopicMetadata(
-    name=f'/gt_pose/obj_{TARGET_OBJ_ID:06d}',
+    name='/gt_pose',
     type='geometry_msgs/msg/PoseStamped',
     serialization_format='cdr'))
 writer.create_topic(rosbag2_py.TopicMetadata(
@@ -92,10 +90,12 @@ for img_id_str, cam_data in cameras.items():
     # Find the entry for TARGET_OBJ_ID in this frame
     target_gt = None
     target_box = None
-    for box_info, gt in zip(boxes_this_img, gts_this_img):
+    target_inst_idx = None
+    for inst_idx, (box_info, gt) in enumerate(zip(boxes_this_img, gts_this_img)):
         if gt["obj_id"] == TARGET_OBJ_ID:
             target_gt = gt
             target_box = box_info
+            target_inst_idx = inst_idx
             break
 
     if target_gt is None:
@@ -117,7 +117,7 @@ for img_id_str, cam_data in cameras.items():
     pose.pose.orientation.y = float(quat[1])
     pose.pose.orientation.z = float(quat[2])
     pose.pose.orientation.w = float(quat[3])
-    writer.write(f"/gt_pose/obj_{TARGET_OBJ_ID:06d}", serialize_message(pose), t_ns)
+    writer.write('/gt_pose', serialize_message(pose), t_ns)
 
     # ── Camera pose in world frame (invert the object->camera transform) ────
     # Forward:  X_cam = R * X_world + t   (object in camera frame)
@@ -158,7 +158,7 @@ for img_id_str, cam_data in cameras.items():
 
     # ── Instance mask (visible portion only) ────────────────────────────────
     # mask_visib = only the visible pixels (occlusion-aware) — correct for ICP
-    mask_file = f"{scene_path}/mask_visib/{img_id:06d}_{TARGET_INST_IDX:06d}.png"
+    mask_file = f"{scene_path}/mask_visib/{img_id:06d}_{target_inst_idx:06d}.png"
     m = cv2.imread(mask_file, cv2.IMREAD_GRAYSCALE)
     if m is not None:
         instance_mask = np.zeros(m.shape, dtype=np.uint16)
