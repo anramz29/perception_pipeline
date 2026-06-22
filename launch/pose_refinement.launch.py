@@ -9,7 +9,7 @@ def generate_launch_description():
     bag_path_arg = DeclareLaunchArgument(
         "bag_path",
         default_value=os.path.expanduser(
-            "~/ros2_ws/src/perception_pipeline/data/bags/tless_scene1"
+            "~/ros2_ws/src/perception_pipeline/data/bags/tless_scene8"
         ),
         description="Path to the ROS 2 bag directory",
     )
