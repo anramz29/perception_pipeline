@@ -6,8 +6,9 @@ ROS 2 package for 6DoF object pose estimation targeting robotic manipulation wit
 
 1. **2D detection** — ground-truth bboxes from T-LESS (`/gt_detections`) stand in during development; a fine-tuned YOLO model replaces this last
 2. **Point localization** — back-projects each detection centroid to 3D using depth + camera intrinsics
-3. **ICP** — refines the initial 3D point to a full 6DoF pose by aligning object CAD models against the depth point cloud
-4. **Detector fine-tuning + TensorRT export** — train YOLO on T-LESS, export to TensorRT for deployment
+3. **Coarse alignment (FPFH + RANSAC)** — estimates a full 6DoF initial pose including rotation by matching Fast Point Feature Histogram descriptors between the scene point cloud and the CAD model; prevents ICP from getting stuck in local minima
+4. **ICP** — refines the coarse pose to a full 6DoF pose by aligning object CAD models against the depth point cloud
+5. **Detector fine-tuning + TensorRT export** — train YOLO on T-LESS, export to TensorRT for deployment
 
 ## Status
 
@@ -15,7 +16,8 @@ ROS 2 package for 6DoF object pose estimation targeting robotic manipulation wit
 - [x] Ground-truth bbox viz node (`src/bbox_viz_node.cpp`) — overlays bboxes on RGB for visual validation
 - [x] RViz visualization config
 - [x] Point localization node (`src/point_localization_node.cpp`) — back-projects detection centroids to 3D using depth + camera intrinsics
-- [ ] ICP pose refinement against T-LESS CAD models
+- [x] Coarse alignment (FPFH + RANSAC) in `src/icp_node.cpp` — full 6DoF initial pose estimate before ICP
+- [x] ICP pose refinement against T-LESS CAD models
 - [ ] Evaluation against ground-truth poses
 - [ ] YOLO fine-tuning on T-LESS + TensorRT export
 
@@ -73,7 +75,21 @@ python3 scripts/download_bop.py   # download + extract T-LESS
 python3 scripts/bop_to_rosbag.py  # convert to ROS 2 bag
 ```
 
-`bop_to_rosbag.py` converts scene `test_primesense/000001` — which contains T-LESS objects **2, 25, 29, and 30** — into a ROS 2 bag with RGB, depth, camera info, per-object ground-truth poses, `/gt_detections` (perfect 2D bounding boxes used in place of a trained detector during development), and `/gt_instance_mask` (a `mono16` label image where each visible instance is assigned a unique integer label; 0 = background).
+`bop_to_rosbag.py` converts a T-LESS scene into a ROS 2 bag with RGB, depth, camera info, per-object ground-truth poses, `/gt_detections` (perfect 2D bounding boxes used in place of a trained detector during development), and `/gt_instance_mask` (a `mono16` label image where each visible instance is assigned a unique integer label; 0 = background).
+
+The script takes three required arguments:
+
+| Argument | Type | Description |
+|---|---|---|
+| `--scene` | int | Scene number (e.g. `1` maps to `test_primesense/000001`) |
+| `--obj_id` | int | Target object ID to track (e.g. `25`) |
+| `--bag_name` | str | Output bag name written to `data/bags/` |
+
+```bash
+python3 scripts/bop_to_rosbag.py --scene 1 --obj_id 25 --bag_name tless_scene1
+```
+
+If the object is not present in the scene, the script will warn and produce an empty bag rather than silently failing.
 
 ## Running
 
@@ -93,6 +109,24 @@ ros2 launch perception_pipeline pose_estimation.launch.py \
 ```
 
 Monitor estimated positions with `ros2 topic echo /estimated_pose`.
+
+### Pose refinement pipeline (FPFH + RANSAC → ICP)
+
+Plays the bag and runs the full coarse-to-fine pose estimation pipeline:
+
+```bash
+ros2 launch perception_pipeline pose_refinement.launch.py
+```
+
+Override the bag path or CAD model:
+
+```bash
+ros2 launch perception_pipeline pose_refinement.launch.py \
+  bag_path:=/path/to/bag \
+  model_path:=/path/to/obj.ply
+```
+
+Monitor refined poses with `ros2 topic echo /refined_pose`. Position and rotation errors against ground truth are logged by the node.
 
 ![Ground-truth poses and detections in RViz](docs/images/gt_poses_rviz.png)
 
@@ -114,6 +148,7 @@ ros2 launch perception_pipeline detect_viz.launch.py
 | `/gt_detections_debug` | `sensor_msgs/Image` | RGB annotated with ground-truth bounding boxes |
 | `/gt_instance_mask` | `sensor_msgs/Image` | `mono16` mask of only a certain object in this case obj_2 |
 | `/estimated_pose` | `geometry_msgs/PoseStamped` | 3D position back-projected from depth (identity orientation until ICP) |
+| `/refined_pose` | `geometry_msgs/PoseStamped` | Full 6DoF pose after FPFH coarse alignment + ICP refinement |
 
 ## Project Structure
 
@@ -137,5 +172,6 @@ perception_pipeline/
 └── src/
     ├── detector_node.cpp           # YOLO11 via ONNX Runtime — not active focus
     ├── bbox_viz_node.cpp           # ground-truth bbox overlay
-    └── point_localization_node.cpp # back-projects detection centroids to 3D
+    ├── point_localization_node.cpp # back-projects detection centroids to 3D
+    └── icp_node.cpp                # FPFH coarse alignment + ICP pose refinement
 ```
