@@ -1,23 +1,29 @@
-import rclpy # ros depedencies 
+import rclpy # ros depedencies
 from rclpy.serialization import serialize_message #ros messages conversion
 import rosbag2_py # for writing ROS 2 bags
 from sensor_msgs.msg import Image, CameraInfo # image camera info
 from geometry_msgs.msg import PoseStamped # for ground truth poses
 from cv_bridge import CvBridge # for converting OpenCV images to ROS messages
 from scipy.spatial.transform import Rotation # for converting rotation matrices to quaternions
-import cv2, json, numpy as np, os # for file handling and data processing
+import cv2, json, numpy as np, os, argparse # for file handling and data processing
 from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesisWithPose
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--scene",    type=int, required=True, help="scene id e.g. 1")
+parser.add_argument("--obj_id",   type=int, required=True, help="object id e.g. 25")
+parser.add_argument("--bag_name", type=str, required=True, help="output bag name e.g. tless_scene1")
+args = parser.parse_args()
 
 # importing cv bridge
 bridge = CvBridge()
 
 # target object
-TARGET_OBJ_ID = 25
+TARGET_OBJ_ID = args.obj_id
 
 # Define paths
 base = os.path.expanduser('~/ros2_ws/src/perception_pipeline/data')
-scene_path = f"{base}/tless/test_primesense/000001"
-output_path = f"{base}/bags/tless_scene1"
+scene_path = f"{base}/tless/test_primesense/{args.scene:06d}"
+output_path = f"{base}/bags/{args.bag_name}"
 
 # Load camera parameters and ground truth poses
 with open(f"{scene_path}/scene_camera.json") as f:
@@ -59,6 +65,7 @@ writer.create_topic(rosbag2_py.TopicMetadata(
     serialization_format='cdr'))
 
 # Process each image and write to the bag
+frames_written = 0
 for img_id_str, cam_data in cameras.items():
     img_id = int(img_id_str)
     t_ns = int(img_id * 0.033 * 1e9)  # nanoseconds
@@ -101,6 +108,7 @@ for img_id_str, cam_data in cameras.items():
     if target_gt is None:
         # object not visible in this frame, skip pose/mask/detection
         continue
+    frames_written += 1
 
     R = np.array(target_gt["cam_R_m2c"]).reshape(3, 3)
     t_vec = np.array(target_gt["cam_t_m2c"]) / 1000.0  # mm -> m
@@ -169,4 +177,7 @@ for img_id_str, cam_data in cameras.items():
         writer.write('/gt_instance_mask', serialize_message(mask_msg), t_ns)
 
 del writer
-print(f"Bag saved to {output_path}")
+if frames_written == 0:
+    print(f"WARNING: object {TARGET_OBJ_ID} was not found in scene {args.scene} — bag is empty")
+else:
+    print(f"Bag saved to {output_path} ({frames_written} frames written)")
