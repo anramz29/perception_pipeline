@@ -13,6 +13,10 @@
 #include <pcl/io/ply_io.h>
 #include <pcl/registration/icp.h>
 #include <pcl/common/transforms.h>
+#include <pcl/features/normal_3d.h>
+#include <pcl/features/fpfh.h>
+#include <pcl/registration/sample_consensus_prerejective.h>
+#include <pcl/filters/voxel_grid.h>
 
 #include <Eigen/Geometry>
 #include <optional>
@@ -22,6 +26,8 @@ using sensor_msgs::msg::Image;
 using sensor_msgs::msg::CameraInfo;
 using geometry_msgs::msg::PoseStamped;
 using Cloud = pcl::PointCloud<pcl::PointXYZ>;
+using NormalCloud = pcl::PointCloud<pcl::Normal>;
+using FeatureCloud = pcl::PointCloud<pcl::FPFHSignature33>;
 
 class IcpNode : public rclcpp::Node {
 public:
@@ -84,6 +90,8 @@ private:
     Cloud::Ptr buildSceneCloud(const cv::Mat& depth, const cv::Mat& mask,
                                double fx, double fy, double cx, double cy)
     {
+        // we use auto here to avoid typing out the long pcl::PointCloud<pcl::PointXYZ>::Ptr
+        
         auto cloud = std::make_shared<Cloud>();
         for (int v = 0; v < depth.rows; ++v) {
             for (int u = 0; u < depth.cols; ++u) {
@@ -102,6 +110,89 @@ private:
             }
         }
         return cloud;
+    }
+
+    // downsamples the point cloud for faster processing for course feature matching
+    Cloud::Ptr downSample(const Cloud::Ptr& input){
+        auto filtered = std::make_shared<Cloud>();
+        pcl::VoxelGrid<pcl::PointXYZ> vg;
+
+        // pass the input
+        vg.setInputCloud(input);
+        // takes three seprate float args
+        vg.setLeafSize(0.005f, 0.005f, 0.005f);
+
+        // make sure to derfrence
+        vg.filter(*filtered);
+
+        return filtered;
+    }
+
+
+    NormalCloud::Ptr estimateNormals(const Cloud::Ptr& input){
+        // create the output
+        auto normals = std::make_shared<NormalCloud>();
+
+        // create our estimator, with out input pts, and our normal results
+        pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> ne;
+
+        // set input cloud
+        ne.setInputCloud(input);
+        ne.setKSearch(10); // use ten neareset neighboors to estimate each normal
+        ne.compute(*normals);
+
+        return normals;
+    }
+
+
+
+    FeatureCloud::Ptr computeFpfh(const Cloud::Ptr& cloud_ds, const NormalCloud::Ptr& normals){
+        auto features = std::make_shared<FeatureCloud>();
+
+        pcl::FPFHEstimation<pcl::PointXYZ, pcl::Normal, pcl::FPFHSignature33> fpfh;
+
+        fpfh.setInputCloud(cloud_ds);
+        fpfh.setInputNormals(normals);
+
+        // set search readius (must be larger thean the setKsearch radius used for normals)
+        fpfh.setRadiusSearch(0.025);
+        fpfh.compute(*features);
+
+        return features;
+    }
+
+    std::optional<Eigen::Matrix4f> coarseAlign(
+        const Cloud::Ptr&           scene_ds,
+        const Cloud::Ptr&           cad_ds,
+        const FeatureCloud::Ptr&    scene_features,
+        const FeatureCloud::Ptr&    cad_features
+    ){
+
+        pcl::SampleConsensusPrerejective<pcl::PointXYZ, pcl::PointXYZ, pcl::FPFHSignature33> sac;
+        //                                ^source pts    ^target pts    ^feature type
+
+        sac.setInputSource(cad_ds); // what we are aligning
+        sac.setInputTarget(scene_ds); // whate were aligning to
+        sac.setSourceFeatures(cad_features); // cad features
+        sac.setTargetFeatures(scene_features);
+        sac.setMaximumIterations(50000);
+        sac.setNumberOfSamples(3);
+        sac.setCorrespondenceRandomness(5);
+        sac.setInlierFraction(0.25f);
+        sac.setSimilarityThreshold(0.9f);
+        sac.setMaxCorrespondenceDistance(0.01f);
+
+        Cloud aligned;
+        sac.align(aligned);
+
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+            "coarse: converged=%d  fitness=%.6f  inliers=%zu",
+            sac.hasConverged(),
+            sac.getFitnessScore(),
+            sac.getInliers().size());
+
+        if (!sac.hasConverged()) return std::nullopt;
+        return sac.getFinalTransformation();
     }
 
     // Move CAD model to the initial guess, run ICP against the scene cloud.
@@ -190,8 +281,22 @@ private:
         double fx = info_msg->k[0], cx = info_msg->k[2];
         double fy = info_msg->k[4], cy = info_msg->k[5];
 
+        // 1. build our scene cloud
         auto scene = buildSceneCloud(depth_ptr->image, mask_ptr->image, fx, fy, cx, cy);
         if (scene->empty()) return;
+
+        // 2. downsample both cad and real point cloud
+        auto scene_ds = downSample(scene);
+        auto cad_ds   = downSample(cad_model_);
+
+        //3. obtain our normalized point clouds
+        auto norm_scene = estimateNormals(scene_ds);
+        auto norm_cad   = estimateNormals(cad_ds);
+
+        // 4. feature matching
+        auto features_scene  = computeFpfh(scene_ds, norm_scene);
+        auto feature_cad     = computeFpfh(cad_ds, norm_cad);
+
 
         // build initial transform from point_localization_node's position guess
         Eigen::Matrix4f init_T = Eigen::Matrix4f::Identity();
@@ -199,7 +304,12 @@ private:
         init_T(1,3) = pose_msg->pose.position.y;
         init_T(2,3) = pose_msg->pose.position.z;
 
-        auto result = runIcp(scene, init_T);
+       // 5. coarse align — gets us rotation + translation
+        auto coarse_T = coarseAlign(scene_ds, cad_ds, features_scene, feature_cad);
+        if (!coarse_T) return;
+
+        // 6. fine ICP using coarse transform instead of translation-only guess
+        auto result = runIcp(scene, *coarse_T);
         if (!result) return;
 
         auto refined = toPoseStamped(*result, depth_msg->header);
