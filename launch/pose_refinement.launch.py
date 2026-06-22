@@ -1,6 +1,6 @@
 import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, TimerAction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -26,6 +26,7 @@ def generate_launch_description():
         cmd=["ros2", "bag", "play", LaunchConfiguration("bag_path"), "--loop"],
         output="screen",
     )
+
     bbox_viz_node = Node(
         package="perception_pipeline",
         executable="bbox_viz_node",
@@ -55,12 +56,13 @@ def generate_launch_description():
         arguments=["0", "0", "0", "0", "0", "0", "world", "camera_link"],
     )
 
+
     return LaunchDescription([
         bag_path_arg,
         model_path_arg,
-        bag_play,
         bbox_viz_node,
+        bag_play,
         point_localization_node,
         icp_node,
-        static_tf,
-    ])
+        static_tf
+])
