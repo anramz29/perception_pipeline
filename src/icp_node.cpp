@@ -19,6 +19,7 @@
 #include <optional>
 #include <cmath>
 #include <chrono>
+#include <limits>
 
 using sensor_msgs::msg::Image;
 using sensor_msgs::msg::CameraInfo;
@@ -27,6 +28,8 @@ using Cloud = pcl::PointCloud<pcl::PointXYZ>;
 
 class IcpNode : public rclcpp::Node {
 public:
+    ~IcpNode() { printSummary(); }
+
     IcpNode() : Node("icp_node") {
         // get all our publishers
         ref_pose_pub_ = create_publisher<PoseStamped>("/refined_pose", 10);
@@ -54,6 +57,9 @@ public:
 
         // T-LESS PLY models are in millimetres; scene cloud is in metres
         for (auto& pt : *cad_model_) { pt.x *= 0.001f; pt.y *= 0.001f; pt.z *= 0.001f; }
+
+        // pre-compute once — CAD model never changes between frames
+        cad_ds_ = downSample(cad_model_);
     }
 
 private:
@@ -109,30 +115,20 @@ private:
         return cloud;
     }
 
-    // downsamples the point cloud for faster processing for course feature matching
     Cloud::Ptr downSample(const Cloud::Ptr& input){
         auto filtered = std::make_shared<Cloud>();
         pcl::VoxelGrid<pcl::PointXYZ> vg;
-
-        // pass the input
         vg.setInputCloud(input);
-
-        // takes three seprate float args
         vg.setLeafSize(0.01f, 0.01f, 0.01f);
-
-        // make sure to derfrence
         vg.filter(*filtered);
-
         return filtered;
     }
 
     std::optional<Eigen::Matrix4f> multiStartIcp(
-        const Cloud::Ptr& scene, // PTR is short hand for shared ptr
         const Cloud::Ptr& scene_ds,
-        const Cloud::Ptr& cad_ds,
         const Eigen::Vector3f& translation)
     {
-        //1. tracking variables
+        if (scene_ds->size() < 50) return std::nullopt;
 
         // tracks the lowest fitness score seen so far
         float best_score = std::numeric_limits<float>::max();
@@ -143,55 +139,38 @@ private:
         // guard against return best_T if zero starts converging
         bool any_converged = false;
 
-        // 2. now we loop over 12 rotations that are evenly spaced around Z 
-        // 30 deg steps
-        for (int flip = 0; flip < 2; flip++){
-            for (int i = 0; i < 12; i++){
-                // divide a full circule into 12 equal steps 30 deg apart
-                float angle = 2.0f * M_PI * i/12;
+        // 12 rotations evenly spaced around Z, 30 deg steps
+        for (int i = 0; i < 12; i++){
+            float angle = 2.0f * M_PI * i / 12;
 
-                // create a identity matrix to fill
-                Eigen::Matrix4f candidate = Eigen::Matrix4f::Identity();
+            Eigen::Matrix4f candidate = Eigen::Matrix4f::Identity();
+            candidate.block<3,3>(0,0) = Eigen::AngleAxisf(angle,
+                Eigen::Vector3f::UnitZ()).toRotationMatrix();
+            candidate.block<3,1>(0,3) = translation;
 
-                // rotation around z
-                Eigen::Matrix3f Rz = Eigen::AngleAxisf(angle,
-                    Eigen::Vector3f::UnitZ()).toRotationMatrix();
+            auto cad_candidate = std::make_shared<Cloud>();
+            pcl::transformPointCloud(*cad_ds_, *cad_candidate, candidate);
 
-                // add this so that we can flip the icp allowing stopping cosistent
-                // 180 deg errors
-                Eigen::Matrix3f Rx = Eigen::AngleAxisf(flip * M_PI,
-                    Eigen::Vector3f::UnitX()).toRotationMatrix();
+            pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
+            icp.setInputSource(cad_candidate);
+            icp.setInputTarget(scene_ds);
+            icp.setMaxCorrespondenceDistance(0.05);
+            icp.setMaximumIterations(15);
 
-                // add the rotation and translation compenets to the candidate
-                candidate.block<3,3>(0,0) = Rx * Rz;
-                candidate.block<3,1>(0,3) = translation;
+            Cloud aligned;
+            icp.align(aligned);
 
-                // transform downsampled Cad to candidate pose
-                auto cad_candidate = std::make_shared<Cloud>();
-                pcl::transformPointCloud(*cad_ds, *cad_candidate, candidate);
-                
-                // fast ICP on downsampled clouds — just enough to score this rotation
-                pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
-                icp.setInputSource(cad_candidate);
-                icp.setInputTarget(scene_ds);
-                icp.setMaxCorrespondenceDistance(0.02);
-                icp.setMaximumIterations(15);
+            if (!icp.hasConverged()) continue;
 
-                Cloud aligned;
-                icp.align(aligned);
-
-                if (!icp.hasConverged()) continue;
-
-                float score = icp.getFitnessScore();
-                if (score < best_score){
-                    best_score = score;
-                    best_T = icp.getFinalTransformation() * candidate;
-                    any_converged = true;
-                }   
+            float score = icp.getFitnessScore();
+            if (score < best_score){
+                best_score = score;
+                best_T = icp.getFinalTransformation() * candidate;
+                any_converged = true;
             }
         }
         if (!any_converged) return std::nullopt;
-        return runIcp(scene, best_T);
+        return runIcp(scene_ds, best_T);
     }
 
     // Move CAD model to the initial guess, run ICP against the scene cloud.
@@ -200,15 +179,14 @@ private:
     std::optional<Eigen::Matrix4f> runIcp(const Cloud::Ptr& scene,
                                           const Eigen::Matrix4f& init_T)
     {
-        // move CAD model to the initial guess
         auto init_cad = std::make_shared<Cloud>();
-        pcl::transformPointCloud(*cad_model_, *init_cad, init_T);
+        pcl::transformPointCloud(*cad_ds_, *init_cad, init_T);
 
         // run ICP
         pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
         icp.setInputSource(init_cad);
         icp.setInputTarget(scene);
-        icp.setMaxCorrespondenceDistance(0.05);
+        icp.setMaxCorrespondenceDistance(0.1);
         icp.setMaximumIterations(30);
 
         // run alignment
@@ -262,6 +240,24 @@ private:
         double rot_err_deg = 2.0 * std::acos(std::min(dot, 1.0)) * 180.0 / M_PI;
 
         RCLCPP_INFO(get_logger(), "pos_err=%.4fm  rot_err=%.2fdeg", pos_err, rot_err_deg);
+
+        n_frames_++;
+        pos_sum_ += pos_err;  pos_min_ = std::min(pos_min_, pos_err);  pos_max_ = std::max(pos_max_, pos_err);
+        rot_sum_ += rot_err_deg;  rot_min_ = std::min(rot_min_, rot_err_deg);  rot_max_ = std::max(rot_max_, rot_err_deg);
+    }
+
+    void printSummary()
+    {
+        if (n_frames_ == 0) { RCLCPP_WARN(get_logger(), "No frames processed."); return; }
+        RCLCPP_INFO(get_logger(), "─────────────────────────────────────────");
+        RCLCPP_INFO(get_logger(), "  ICP Summary  (%zu frames)", n_frames_);
+        RCLCPP_INFO(get_logger(), "  pos_err  mean=%.4fm  min=%.4fm  max=%.4fm",
+            pos_sum_ / n_frames_, pos_min_, pos_max_);
+        RCLCPP_INFO(get_logger(), "  rot_err  mean=%.2fdeg  min=%.2fdeg  max=%.2fdeg",
+            rot_sum_ / n_frames_, rot_min_, rot_max_);
+        RCLCPP_INFO(get_logger(), "  time     mean=%.1fms  min=%.1fms  max=%.1fms",
+            ms_sum_ / n_frames_, ms_min_, ms_max_);
+        RCLCPP_INFO(get_logger(), "─────────────────────────────────────────");
     }
 
     // ── Main callback ─────────────────────────────────────────────────────────
@@ -284,9 +280,8 @@ private:
         auto scene = buildSceneCloud(depth_ptr->image, mask_ptr->image, fx, fy, cx, cy);
         if (scene->empty()) return;
 
-        // 2. downsample both cad and real point cloud
+        // 2. downsample scene (CAD is pre-downsampled in constructor)
         auto scene_ds = downSample(scene);
-        auto cad_ds   = downSample(cad_model_);
 
         // 3. create our translation vector
         Eigen::Vector3f translation(
@@ -295,16 +290,17 @@ private:
             pose_msg->pose.position.z
         );
 
-        // 4. multi-start ICP: try 24 rotations, pick best, then final full-res ICP
+        // 4. multi-start ICP: try 12 rotations, pick best, then final ICP
         auto t0 = std::chrono::steady_clock::now();
-        auto result = multiStartIcp(scene, scene_ds, cad_ds, translation);
+        auto result = multiStartIcp(scene_ds, translation);
         auto t1 = std::chrono::steady_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 4000,
             "multiStartIcp took %.1f ms", ms);
 
-        // 5. debug statement
+        ms_sum_ += ms;  ms_min_ = std::min(ms_min_, ms);  ms_max_ = std::max(ms_max_, ms);
+
         if (!result) {
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "multi-start ICP failed to converge");
             return;
@@ -322,6 +318,12 @@ private:
     rclcpp::Publisher<PoseStamped>::SharedPtr ref_pose_pub_;
     std::shared_ptr<Sync>  sync_;
     std::shared_ptr<Cloud> cad_model_;
+    Cloud::Ptr             cad_ds_;
+
+    size_t n_frames_ = 0;
+    double pos_sum_ = 0.0, pos_min_ = std::numeric_limits<double>::max(), pos_max_ = 0.0;
+    double rot_sum_ = 0.0, rot_min_ = std::numeric_limits<double>::max(), rot_max_ = 0.0;
+    double ms_sum_  = 0.0, ms_min_  = std::numeric_limits<double>::max(), ms_max_  = 0.0;
 
     message_filters::Subscriber<PoseStamped> pose_sub_;
     message_filters::Subscriber<Image>       gt_mask_sub_;
