@@ -13,21 +13,17 @@
 #include <pcl/io/ply_io.h>
 #include <pcl/registration/icp.h>
 #include <pcl/common/transforms.h>
-#include <pcl/features/normal_3d.h>
-#include <pcl/features/fpfh.h>
-#include <pcl/registration/sample_consensus_prerejective.h>
 #include <pcl/filters/voxel_grid.h>
 
 #include <Eigen/Geometry>
 #include <optional>
 #include <cmath>
+#include <chrono>
 
 using sensor_msgs::msg::Image;
 using sensor_msgs::msg::CameraInfo;
 using geometry_msgs::msg::PoseStamped;
 using Cloud = pcl::PointCloud<pcl::PointXYZ>;
-using NormalCloud = pcl::PointCloud<pcl::Normal>;
-using FeatureCloud = pcl::PointCloud<pcl::FPFHSignature33>;
 
 class IcpNode : public rclcpp::Node {
 public:
@@ -84,6 +80,7 @@ private:
         }
     }
 
+
     // Iterate over the rows and columns of the depth image.
     // Skip background pixels in mask, skip non-valid / no-return depth,
     // then back-project valid pixels to 3D using camera intrinsics.
@@ -119,8 +116,9 @@ private:
 
         // pass the input
         vg.setInputCloud(input);
+
         // takes three seprate float args
-        vg.setLeafSize(0.005f, 0.005f, 0.005f);
+        vg.setLeafSize(0.01f, 0.01f, 0.01f);
 
         // make sure to derfrence
         vg.filter(*filtered);
@@ -128,71 +126,72 @@ private:
         return filtered;
     }
 
+    std::optional<Eigen::Matrix4f> multiStartIcp(
+        const Cloud::Ptr& scene, // PTR is short hand for shared ptr
+        const Cloud::Ptr& scene_ds,
+        const Cloud::Ptr& cad_ds,
+        const Eigen::Vector3f& translation)
+    {
+        //1. tracking variables
 
-    NormalCloud::Ptr estimateNormals(const Cloud::Ptr& input){
-        // create the output
-        auto normals = std::make_shared<NormalCloud>();
+        // tracks the lowest fitness score seen so far
+        float best_score = std::numeric_limits<float>::max();
 
-        // create our estimator, with out input pts, and our normal results
-        pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> ne;
+        // stores the transform of best score
+        Eigen::Matrix4f best_T = Eigen::Matrix4f::Identity();
 
-        // set input cloud
-        ne.setInputCloud(input);
-        ne.setKSearch(10); // use ten neareset neighboors to estimate each normal
-        ne.compute(*normals);
+        // guard against return best_T if zero starts converging
+        bool any_converged = false;
 
-        return normals;
-    }
+        // 2. now we loop over 12 rotations that are evenly spaced around Z 
+        // 30 deg steps
+        for (int flip = 0; flip < 2; flip++){
+            for (int i = 0; i < 12; i++){
+                // divide a full circule into 12 equal steps 30 deg apart
+                float angle = 2.0f * M_PI * i/12;
 
+                // create a identity matrix to fill
+                Eigen::Matrix4f candidate = Eigen::Matrix4f::Identity();
 
+                // rotation around z
+                Eigen::Matrix3f Rz = Eigen::AngleAxisf(angle,
+                    Eigen::Vector3f::UnitZ()).toRotationMatrix();
 
-    FeatureCloud::Ptr computeFpfh(const Cloud::Ptr& cloud_ds, const NormalCloud::Ptr& normals){
-        auto features = std::make_shared<FeatureCloud>();
+                // add this so that we can flip the icp allowing stopping cosistent
+                // 180 deg errors
+                Eigen::Matrix3f Rx = Eigen::AngleAxisf(flip * M_PI,
+                    Eigen::Vector3f::UnitX()).toRotationMatrix();
 
-        pcl::FPFHEstimation<pcl::PointXYZ, pcl::Normal, pcl::FPFHSignature33> fpfh;
+                // add the rotation and translation compenets to the candidate
+                candidate.block<3,3>(0,0) = Rx * Rz;
+                candidate.block<3,1>(0,3) = translation;
 
-        fpfh.setInputCloud(cloud_ds);
-        fpfh.setInputNormals(normals);
+                // transform downsampled Cad to candidate pose
+                auto cad_candidate = std::make_shared<Cloud>();
+                pcl::transformPointCloud(*cad_ds, *cad_candidate, candidate);
+                
+                // fast ICP on downsampled clouds — just enough to score this rotation
+                pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
+                icp.setInputSource(cad_candidate);
+                icp.setInputTarget(scene_ds);
+                icp.setMaxCorrespondenceDistance(0.02);
+                icp.setMaximumIterations(15);
 
-        // set search readius (must be larger thean the setKsearch radius used for normals)
-        fpfh.setRadiusSearch(0.025);
-        fpfh.compute(*features);
+                Cloud aligned;
+                icp.align(aligned);
 
-        return features;
-    }
+                if (!icp.hasConverged()) continue;
 
-    std::optional<Eigen::Matrix4f> coarseAlign(
-        const Cloud::Ptr&           scene_ds,
-        const Cloud::Ptr&           cad_ds,
-        const FeatureCloud::Ptr&    scene_features,
-        const FeatureCloud::Ptr&    cad_features
-    ){
-
-        pcl::SampleConsensusPrerejective<pcl::PointXYZ, pcl::PointXYZ, pcl::FPFHSignature33> sac;
-        //                                ^source pts    ^target pts    ^feature type
-
-        sac.setInputSource(cad_ds); // what we are aligning
-        sac.setInputTarget(scene_ds); // whate were aligning to
-        sac.setSourceFeatures(cad_features); // cad features
-        sac.setTargetFeatures(scene_features);
-        sac.setMaximumIterations(50000);
-        sac.setNumberOfSamples(3);
-        sac.setCorrespondenceRandomness(5);
-        sac.setInlierFraction(0.25f);
-        sac.setSimilarityThreshold(0.9f);
-        sac.setMaxCorrespondenceDistance(0.01f);
-
-        Cloud aligned;
-        sac.align(aligned);
-
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
-            "coarse: converged=%d  fitness=%.6f  inliers=%zu",
-            sac.hasConverged(),
-            sac.getFitnessScore(),
-            sac.getInliers().size());
-
-        if (!sac.hasConverged()) return std::nullopt;
-        return sac.getFinalTransformation();
+                float score = icp.getFitnessScore();
+                if (score < best_score){
+                    best_score = score;
+                    best_T = icp.getFinalTransformation() * candidate;
+                    any_converged = true;
+                }   
+            }
+        }
+        if (!any_converged) return std::nullopt;
+        return runIcp(scene, best_T);
     }
 
     // Move CAD model to the initial guess, run ICP against the scene cloud.
@@ -210,7 +209,7 @@ private:
         icp.setInputSource(init_cad);
         icp.setInputTarget(scene);
         icp.setMaxCorrespondenceDistance(0.05);
-        icp.setMaximumIterations(50);
+        icp.setMaximumIterations(30);
 
         // run alignment
         Cloud aligned;
@@ -289,28 +288,28 @@ private:
         auto scene_ds = downSample(scene);
         auto cad_ds   = downSample(cad_model_);
 
-        //3. obtain our normalized point clouds
-        auto norm_scene = estimateNormals(scene_ds);
-        auto norm_cad   = estimateNormals(cad_ds);
+        // 3. create our translation vector
+        Eigen::Vector3f translation(
+            pose_msg->pose.position.x,
+            pose_msg->pose.position.y,
+            pose_msg->pose.position.z
+        );
 
-        // 4. feature matching
-        auto features_scene  = computeFpfh(scene_ds, norm_scene);
-        auto feature_cad     = computeFpfh(cad_ds, norm_cad);
+        // 4. multi-start ICP: try 24 rotations, pick best, then final full-res ICP
+        auto t0 = std::chrono::steady_clock::now();
+        auto result = multiStartIcp(scene, scene_ds, cad_ds, translation);
+        auto t1 = std::chrono::steady_clock::now();
+        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+            "multiStartIcp took %.1f ms", ms);
 
-        // build initial transform from point_localization_node's position guess
-        Eigen::Matrix4f init_T = Eigen::Matrix4f::Identity();
-        init_T(0,3) = pose_msg->pose.position.x;
-        init_T(1,3) = pose_msg->pose.position.y;
-        init_T(2,3) = pose_msg->pose.position.z;
+        // 5. debug statement
+        if (!result) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "multi-start ICP failed to converge");
+            return;
+        }
 
-       // 5. coarse align — gets us rotation + translation
-        auto coarse_T = coarseAlign(scene_ds, cad_ds, features_scene, feature_cad);
-        if (!coarse_T) return;
-
-        // 6. fine ICP using coarse transform instead of translation-only guess
-        auto result = runIcp(scene, *coarse_T);
-        if (!result) return;
 
         auto refined = toPoseStamped(*result, depth_msg->header);
         refined.header.frame_id = "camera_link";

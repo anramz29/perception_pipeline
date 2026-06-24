@@ -6,9 +6,8 @@ ROS 2 package for 6DoF object pose estimation targeting robotic manipulation wit
 
 1. **2D detection** — ground-truth bboxes from T-LESS (`/gt_detections`) stand in during development; a fine-tuned YOLO model replaces this last
 2. **Point localization** — back-projects each detection centroid to 3D using depth + camera intrinsics
-3. **Coarse alignment (FPFH + RANSAC)** — estimates a full 6DoF initial pose including rotation by matching Fast Point Feature Histogram descriptors between the scene point cloud and the CAD model; prevents ICP from getting stuck in local minima
-4. **ICP** — refines the coarse pose to a full 6DoF pose by aligning object CAD models against the depth point cloud
-5. **Detector fine-tuning + TensorRT export** — train YOLO on T-LESS, export to TensorRT for deployment
+3. **Multi-start ICP** — tries 24 rotation candidates (12 Z-axis steps × upright/flipped) at the known translation, runs fast ICP on each using downsampled clouds, picks the best fitness score, then runs a final full-resolution ICP refinement
+4. **Detector fine-tuning + TensorRT export** — train YOLO on T-LESS, export to TensorRT for deployment
 
 ## Status
 
@@ -16,8 +15,7 @@ ROS 2 package for 6DoF object pose estimation targeting robotic manipulation wit
 - [x] Ground-truth bbox viz node (`src/bbox_viz_node.cpp`) — overlays bboxes on RGB for visual validation
 - [x] RViz visualization config
 - [x] Point localization node (`src/point_localization_node.cpp`) — back-projects detection centroids to 3D using depth + camera intrinsics
-- [x] Coarse alignment (FPFH + RANSAC) in `src/icp_node.cpp` — full 6DoF initial pose estimate before ICP
-- [x] ICP pose refinement against T-LESS CAD models
+- [x] Multi-start ICP in `src/icp_node.cpp` — 24 rotation candidates + full-resolution refinement
 - [ ] Evaluation against ground-truth poses
 - [ ] YOLO fine-tuning on T-LESS + TensorRT export
 
@@ -61,7 +59,7 @@ sudo ldconfig
 ### 4. Build
 
 ```bash
-cd ~/ros2_ws && colcon build --packages-select perception_pipeline
+cd ~/ros2_ws && colcon build --packages-select perception_pipeline --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```
 
@@ -110,7 +108,7 @@ ros2 launch perception_pipeline pose_estimation.launch.py \
 
 Monitor estimated positions with `ros2 topic echo /estimated_pose`.
 
-### Pose refinement pipeline (FPFH + RANSAC → ICP)
+### Pose refinement pipeline (multi-start ICP)
 
 Plays the bag and runs the full coarse-to-fine pose estimation pipeline:
 
@@ -148,7 +146,7 @@ ros2 launch perception_pipeline detect_viz.launch.py
 | `/gt_detections_debug` | `sensor_msgs/Image` | RGB annotated with ground-truth bounding boxes |
 | `/gt_instance_mask` | `sensor_msgs/Image` | `mono16` mask of only a certain object in this case obj_2 |
 | `/estimated_pose` | `geometry_msgs/PoseStamped` | 3D position back-projected from depth (identity orientation until ICP) |
-| `/refined_pose` | `geometry_msgs/PoseStamped` | Full 6DoF pose after FPFH coarse alignment + ICP refinement |
+| `/refined_pose` | `geometry_msgs/PoseStamped` | Full 6DoF pose after multi-start ICP refinement |
 
 ## Project Structure
 
@@ -173,5 +171,5 @@ perception_pipeline/
     ├── detector_node.cpp           # YOLO11 via ONNX Runtime — not active focus
     ├── bbox_viz_node.cpp           # ground-truth bbox overlay
     ├── point_localization_node.cpp # back-projects detection centroids to 3D
-    └── icp_node.cpp                # FPFH coarse alignment + ICP pose refinement
+    └── icp_node.cpp                # multi-start ICP pose refinement
 ```
