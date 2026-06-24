@@ -19,6 +19,7 @@
 #include <optional>
 #include <cmath>
 #include <chrono>
+#include <limits>
 
 using sensor_msgs::msg::Image;
 using sensor_msgs::msg::CameraInfo;
@@ -27,6 +28,8 @@ using Cloud = pcl::PointCloud<pcl::PointXYZ>;
 
 class IcpNode : public rclcpp::Node {
 public:
+    ~IcpNode() { printSummary(); }
+
     IcpNode() : Node("icp_node") {
         // get all our publishers
         ref_pose_pub_ = create_publisher<PoseStamped>("/refined_pose", 10);
@@ -262,6 +265,22 @@ private:
         double rot_err_deg = 2.0 * std::acos(std::min(dot, 1.0)) * 180.0 / M_PI;
 
         RCLCPP_INFO(get_logger(), "pos_err=%.4fm  rot_err=%.2fdeg", pos_err, rot_err_deg);
+
+        n_frames_++;
+        pos_sum_ += pos_err;  pos_min_ = std::min(pos_min_, pos_err);  pos_max_ = std::max(pos_max_, pos_err);
+        rot_sum_ += rot_err_deg;  rot_min_ = std::min(rot_min_, rot_err_deg);  rot_max_ = std::max(rot_max_, rot_err_deg);
+    }
+
+    void printSummary()
+    {
+        if (n_frames_ == 0) { RCLCPP_WARN(get_logger(), "No frames processed."); return; }
+        RCLCPP_INFO(get_logger(), "─────────────────────────────────────────");
+        RCLCPP_INFO(get_logger(), "  ICP Summary  (%zu frames)", n_frames_);
+        RCLCPP_INFO(get_logger(), "  pos_err  mean=%.4fm  min=%.4fm  max=%.4fm",
+            pos_sum_ / n_frames_, pos_min_, pos_max_);
+        RCLCPP_INFO(get_logger(), "  rot_err  mean=%.2fdeg  min=%.2fdeg  max=%.2fdeg",
+            rot_sum_ / n_frames_, rot_min_, rot_max_);
+        RCLCPP_INFO(get_logger(), "─────────────────────────────────────────");
     }
 
     // ── Main callback ─────────────────────────────────────────────────────────
@@ -322,6 +341,10 @@ private:
     rclcpp::Publisher<PoseStamped>::SharedPtr ref_pose_pub_;
     std::shared_ptr<Sync>  sync_;
     std::shared_ptr<Cloud> cad_model_;
+
+    size_t n_frames_ = 0;
+    double pos_sum_ = 0.0, pos_min_ = std::numeric_limits<double>::max(), pos_max_ = 0.0;
+    double rot_sum_ = 0.0, rot_min_ = std::numeric_limits<double>::max(), rot_max_ = 0.0;
 
     message_filters::Subscriber<PoseStamped> pose_sub_;
     message_filters::Subscriber<Image>       gt_mask_sub_;
