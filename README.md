@@ -99,15 +99,20 @@ sudo apt update && sudo apt install \
 ```
 
 ### 3. ONNX Runtime
+> **Note:** ONNX Runtime and a live 2D object detection model are not used in this project.
+> Landmark observations are sourced directly from ground truth data using the
+> [T-LESS dataset](https://bop.felk.cvut.cz/datasets/) — specifically the `test_primesense` folder —
+> rather than a trained detection model.
 
 Download `onnxruntime-linux-aarch64-1.20.1.tgz` from the [ONNX Runtime releases](https://github.com/microsoft/onnxruntime/releases) and install to `/usr/local`:
-
 ```bash
 tar xzf onnxruntime-linux-aarch64-1.20.1.tgz
 sudo cp -r onnxruntime-linux-aarch64-1.20.1/include/* /usr/local/include/
 sudo cp -r onnxruntime-linux-aarch64-1.20.1/lib/*     /usr/local/lib/
 sudo ldconfig
 ```
+
+I spelled it `test_primesense` — is that the correct folder name? Just want to make sure it matches exactly what's in the dataset before you put it in the README.
 
 ### 4. Build
 
